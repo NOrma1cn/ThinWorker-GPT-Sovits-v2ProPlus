@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thin-tts-server"
+version = "0.1.0"
+description = "GPT-SoVITS v2ProPlus streaming TTS inference server (inference-only, Chinese)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "transformers>=4.30",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "tqdm>=4.60",
+    "pypinyin>=0.50",
+    "jieba-fast>=0.4",
+    "cn2an>=0.5",
+    "onnxruntime>=1.15",
+    "opencc>=1.1",
+    "requests>=2.28",
+    "einops>=0.6",
+    "fast-langdetect>=1.0",
+    "split-lang>=2.0",
+    "packaging>=23.0",
+    "pydantic>=2.0",
+    "g2pw",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx", "build"]
+
+[project.scripts]
+thin-tts-server = "thin_tts.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"thin_tts.text" = ["opencpop-strict.txt"]
+"thin_tts.text.g2pw" = ["*.rep", "*.pickle"]

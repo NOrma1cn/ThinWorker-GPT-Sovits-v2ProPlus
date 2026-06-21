@@ -1,0 +1,1 @@
+recursive-include src/thin_tts/text *.txt *.rep *.pickle
