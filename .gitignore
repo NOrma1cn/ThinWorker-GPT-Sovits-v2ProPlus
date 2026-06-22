@@ -6,3 +6,19 @@ __pycache__/
 *.pyo
 .venv/
 text_init_orig.py
+
+# Local model/checkpoint assets
+GPT_SoVITS/
+src/thin_tts/G2PWModel/
+src/thin_tts/G2PWModel_1.1.zip
+
+# Local inference/evaluation artifacts
+eval_output/
+flash_attention_*.json
+thin_tts_t2s_*.json
+thin_tts_t2s_*.txt
+eval_config_*.yaml
+synth_*.py
+compare_audio.py
+eval_models.py
+test_flash_attention.py

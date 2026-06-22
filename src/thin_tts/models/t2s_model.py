@@ -1,6 +1,10 @@
 # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/models/t2s_model.py
 # reference: https://github.com/lifeiteng/vall-e
+import contextlib
+import json
 import math
+import os
+import time
 from typing import List, Optional
 
 import torch
@@ -418,6 +422,10 @@ class Text2SemanticDecoder(nn.Module):
         """
         x: phoneme_ids
         y: semantic_ids
+
+        Training-only teacher-forcing path. Thin server inference does not call
+        this method; do not use this full-sequence self.h path for serving
+        performance analysis.
         """
         xy_pos, xy_attn_mask, targets = self.make_input_data(x, x_lens, y, y_lens, bert_feature)
 
@@ -437,6 +445,9 @@ class Text2SemanticDecoder(nn.Module):
         """
         x: phoneme_ids
         y: semantic_ids
+
+        Legacy training path retained from upstream GPT-SoVITS. It is not used
+        by thin server inference.
         """
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
@@ -506,6 +517,11 @@ class Text2SemanticDecoder(nn.Module):
         early_stop_num: int = -1,
         temperature: float = 1.0,
     ):
+        # Legacy autoregressive inference path retained from upstream GPT-SoVITS.
+        # Thin server uses infer_panel_naive()/infer_panel_batch_infer(), which
+        # route through process_prompt() + decode_next_token() with KV cache.
+        # This method recomputes the full x+y prefix each step and should not be
+        # used for performance-sensitive serving.
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
         x = self.ar_text_position(x)
@@ -849,6 +865,105 @@ class Text2SemanticDecoder(nn.Module):
         chunk_length: int = 24,
         **kwargs,
     ):
+        profile_timing = bool(os.environ.get("THIN_TTS_PROFILE")) or kwargs.get("profile_timing", False)
+        profile_request_id = kwargs.get("profile_request_id") or str(time.time_ns())
+
+        def profile_event(event: str, **fields):
+            if profile_timing:
+                print(json.dumps({"event": event, "request_id": profile_request_id, **fields}, ensure_ascii=False), flush=True)
+
+        def sync_profile_cuda():
+            if profile_timing and torch.cuda.is_available() and x.is_cuda:
+                torch.cuda.synchronize()
+
+        def new_profile_stats():
+            return {
+                "tokens": 0,
+                "prefill_ms": 0.0,
+                "decode_ms": 0.0,
+                "predict_ms": 0.0,
+                "sample_ms": 0.0,
+                "stop_check_ms": 0.0,
+                "boundary_ms": 0.0,
+                "embed_ms": 0.0,
+            }
+
+        def add_profile_stat(stats, totals, key: str, start: float):
+            sync_profile_cuda()
+            elapsed = (time.perf_counter() - start) * 1000
+            stats[key] += elapsed
+            totals[key] += elapsed
+            return elapsed
+
+        def rounded_stats(stats):
+            return {
+                key: (round(value, 1) if key.endswith("_ms") else value)
+                for key, value in stats.items()
+            }
+
+        torch_profile_requested = bool(os.environ.get("THIN_TTS_TORCH_PROFILE")) or kwargs.get("torch_profile", False)
+        torch_profile_request = os.environ.get("THIN_TTS_TORCH_PROFILE_REQUEST")
+        torch_profile_enabled = torch_profile_requested and (
+            not torch_profile_request or torch_profile_request == profile_request_id
+        )
+        disable_tqdm = bool(os.environ.get("THIN_TTS_DISABLE_TQDM")) or kwargs.get("disable_tqdm", False)
+        torch_profiler = None
+        torch_profile_activities = None
+        torch_profile_finished = False
+
+        def safe_profile_id(value: str):
+            return "".join(c if c.isalnum() or c in "._-" else "_" for c in value)
+
+        def record_stage(name: str):
+            if torch_profile_enabled:
+                return torch.profiler.record_function(name)
+            return contextlib.nullcontext()
+
+        def torch_profile_toggle(enabled: bool):
+            if torch_profiler is not None and hasattr(torch_profiler, "toggle_collection_dynamic"):
+                try:
+                    torch_profiler.toggle_collection_dynamic(enabled, torch_profile_activities)
+                except Exception as exc:
+                    profile_event(
+                        "thin_tts_torch_profile_toggle_error",
+                        enabled=enabled,
+                        error=repr(exc),
+                    )
+
+        def torch_profile_finish():
+            nonlocal torch_profile_finished
+            if torch_profiler is None or torch_profile_finished:
+                return
+            torch_profile_finished = True
+            try:
+                if torch.cuda.is_available() and x.is_cuda:
+                    torch.cuda.synchronize()
+                torch_profiler.stop()
+                profile_dir = os.environ.get("THIN_TTS_TORCH_PROFILE_DIR", os.getcwd())
+                os.makedirs(profile_dir, exist_ok=True)
+                trace_path = os.path.join(
+                    profile_dir,
+                    f"thin_tts_t2s_{safe_profile_id(profile_request_id)}.json",
+                )
+                table_path = os.path.join(
+                    profile_dir,
+                    f"thin_tts_t2s_{safe_profile_id(profile_request_id)}.txt",
+                )
+                torch_profiler.export_chrome_trace(trace_path)
+                table = torch_profiler.key_averages().table(
+                    sort_by="self_cuda_time_total" if x.is_cuda else "self_cpu_time_total",
+                    row_limit=80,
+                )
+                with open(table_path, "w", encoding="utf-8") as f:
+                    f.write(table)
+                profile_event(
+                    "thin_tts_torch_profile_saved",
+                    trace_path=trace_path,
+                    table_path=table_path,
+                )
+            except Exception as exc:
+                profile_event("thin_tts_torch_profile_error", error=repr(exc))
+
         mute_emb_sim_matrix = kwargs.get("mute_emb_sim_matrix", None)
         chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)
         check_token_num = 2
@@ -918,54 +1033,98 @@ class Text2SemanticDecoder(nn.Module):
             if self.ar_audio_position.pe.dtype != _pe_ref.dtype:
                 self.ar_audio_position.pe = self.ar_audio_position.pe.to(dtype=_pe_ref.dtype)
 
+        if torch_profile_enabled:
+            torch_profile_activities = [torch.profiler.ProfilerActivity.CPU]
+            if torch.cuda.is_available() and x.is_cuda:
+                torch_profile_activities.append(torch.profiler.ProfilerActivity.CUDA)
+            torch_profiler = torch.profiler.profile(
+                activities=torch_profile_activities,
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=False,
+            )
+            torch_profiler.start()
+            profile_event(
+                "thin_tts_torch_profile_started",
+                activities=[activity.name for activity in torch_profile_activities],
+            )
 
-        for idx in tqdm(range(1500)):
+        profile_chunk_idx = 0
+        profile_chunk_stats = new_profile_stats()
+        profile_total_stats = new_profile_stats()
+
+        decode_range = range(1500)
+        decode_iter = decode_range if disable_tqdm else tqdm(decode_range)
+
+        for idx in decode_iter:
             token_counter+=1
+            profile_chunk_stats["tokens"] += 1
+            profile_total_stats["tokens"] += 1
             if xy_attn_mask is not None:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.process_prompt(xy_pos, xy_attn_mask, None)
+                sync_profile_cuda()
+                stage_start = time.perf_counter()
+                with record_stage("t2s.process_prompt"):
+                    xy_dec, k_cache, v_cache = self.t2s_transformer.process_prompt(xy_pos, xy_attn_mask, None)
+                add_profile_stat(profile_chunk_stats, profile_total_stats, "prefill_ms", stage_start)
             else:
-                xy_dec, k_cache, v_cache = self.t2s_transformer.decode_next_token(xy_pos, k_cache, v_cache)
+                sync_profile_cuda()
+                stage_start = time.perf_counter()
+                with record_stage("t2s.decode_next_token"):
+                    xy_dec, k_cache, v_cache = self.t2s_transformer.decode_next_token(xy_pos, k_cache, v_cache)
+                add_profile_stat(profile_chunk_stats, profile_total_stats, "decode_ms", stage_start)
 
-            logits = self.ar_predict_layer(xy_dec[:, -1])
+            sync_profile_cuda()
+            stage_start = time.perf_counter()
+            with record_stage("t2s.predict"):
+                logits = self.ar_predict_layer(xy_dec[:, -1])
 
-            # 自适应EOS penalty：根据文本长度和已生成长度动态调整
-            generated_len = idx
-            estimated_target = x_len * 2.5
-            progress_ratio = generated_len / max(estimated_target, 1)
+                # 自适应EOS penalty：根据文本长度和已生成长度动态调整
+                generated_len = idx
+                estimated_target = x_len * 2.5
+                progress_ratio = generated_len / max(estimated_target, 1)
 
-            if progress_ratio < 0.6:
-                eos_penalty = 5.0
-            elif progress_ratio < 1.0:
-                eos_penalty = 5.0 - (progress_ratio - 0.6) / 0.4 * 3.0
-            else:
-                eos_penalty = 2.0
+                if progress_ratio < 0.6:
+                    eos_penalty = 5.0
+                elif progress_ratio < 1.0:
+                    eos_penalty = 5.0 - (progress_ratio - 0.6) / 0.4 * 3.0
+                else:
+                    eos_penalty = 2.0
 
-            logits[:, self.EOS] -= eos_penalty
+                logits[:, self.EOS] -= eos_penalty
 
-            if idx == 0:
-                xy_attn_mask = None
-            if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
-                logits = logits[:, :-1]
+                if idx == 0:
+                    xy_attn_mask = None
+                if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
+                    logits = logits[:, :-1]
+            add_profile_stat(profile_chunk_stats, profile_total_stats, "predict_ms", stage_start)
 
-            samples = sample(
-                logits, y_buf[:, :y_len_total], top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
-            )[0]
+            sync_profile_cuda()
+            stage_start = time.perf_counter()
+            with record_stage("t2s.sample"):
+                samples = sample(
+                    logits, y_buf[:, :y_len_total], top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
+                )[0]
+            add_profile_stat(profile_chunk_stats, profile_total_stats, "sample_ms", stage_start)
 
-            # In-place write to pre-allocated buffer
-            y_buf[:, y_len_total] = samples.squeeze(-1)
-            y_len_total += 1
+            sync_profile_cuda()
+            stage_start = time.perf_counter()
+            with record_stage("t2s.stop_check"):
+                # In-place write to pre-allocated buffer
+                y_buf[:, y_len_total] = samples.squeeze(-1)
+                y_len_total += 1
 
-            if early_stop_num != -1 and (y_len_total - prefix_len) > early_stop_num:
-                print("use early stop num:", early_stop_num)
-                stop = True
+                if early_stop_num != -1 and (y_len_total - prefix_len) > early_stop_num:
+                    print("use early stop num:", early_stop_num)
+                    stop = True
 
-            if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
-                stop = True
-                y_len_total -= 1
-                token_counter -= 1
+                if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
+                    stop = True
+                    y_len_total -= 1
+                    token_counter -= 1
 
-            if idx == 1499:
-                stop = True
+                if idx == 1499:
+                    stop = True
+            add_profile_stat(profile_chunk_stats, profile_total_stats, "stop_check_ms", stage_start)
 
             if stop:
                 if y_len_total == 0:
@@ -974,42 +1133,122 @@ class Text2SemanticDecoder(nn.Module):
                     print("bad zero prediction")
                 # print(f"T2S Decoding EOS [{prefix_len} -> {y_len_total}]")
                 if streaming_mode:
+                    yield_tokens = int(y_len_total - curr_ptr) if curr_ptr < y_len_total else 0
+                    profile_event(
+                        "thin_tts_profile_t2s_chunk",
+                        chunk_index=profile_chunk_idx,
+                        is_final=True,
+                        generated_tokens=int(y_len_total - prefix_len),
+                        yield_tokens=yield_tokens,
+                        token_counter=int(token_counter),
+                        curr_ptr=int(curr_ptr),
+                        x_len=int(x_len),
+                        prefix_len=int(prefix_len),
+                        **rounded_stats(profile_chunk_stats),
+                    )
+                    torch_profile_toggle(False)
                     yield y_buf[:, curr_ptr:y_len_total] if curr_ptr < y_len_total else None, True
+                    torch_profile_toggle(True)
                 break
 
 
             if streaming_mode and (mute_emb_sim_matrix is not None) and (token_counter >= chunk_length+check_token_num):
-                score = mute_emb_sim_matrix[y_buf[0, curr_ptr:y_len_total]] - chunk_split_thershold
-                score[score<0]=-1
-                score[:-1]=score[:-1]+score[1:] ##考虑连续两个token
-                argmax_idx = score.argmax()
+                sync_profile_cuda()
+                stage_start = time.perf_counter()
+                with record_stage("t2s.boundary_check"):
+                    score = mute_emb_sim_matrix[y_buf[0, curr_ptr:y_len_total]] - chunk_split_thershold
+                    score[score<0]=-1
+                    score[:-1]=score[:-1]+score[1:] ##考虑连续两个token
+                    argmax_idx = score.argmax()
 
                 if score[argmax_idx]>=0 and argmax_idx+1>=chunk_length:
                     print(f"\n\ncurr_ptr:{curr_ptr}")
+                    add_profile_stat(profile_chunk_stats, profile_total_stats, "boundary_ms", stage_start)
+                    yield_tokens = int(y_len_total - curr_ptr)
+                    profile_event(
+                        "thin_tts_profile_t2s_chunk",
+                        chunk_index=profile_chunk_idx,
+                        is_final=False,
+                        generated_tokens=int(y_len_total - prefix_len),
+                        yield_tokens=yield_tokens,
+                        token_counter=int(token_counter),
+                        curr_ptr=int(curr_ptr),
+                        x_len=int(x_len),
+                        prefix_len=int(prefix_len),
+                        **rounded_stats(profile_chunk_stats),
+                    )
+                    torch_profile_toggle(False)
                     yield y_buf[:, curr_ptr:y_len_total], False
+                    torch_profile_toggle(True)
                     token_counter -= argmax_idx+1
                     curr_ptr += argmax_idx+1
+                    profile_chunk_idx += 1
+                    profile_chunk_stats = new_profile_stats()
+                else:
+                    add_profile_stat(profile_chunk_stats, profile_total_stats, "boundary_ms", stage_start)
 
 
             elif streaming_mode and (mute_emb_sim_matrix is None) and (token_counter >= chunk_length):
+                sync_profile_cuda()
+                stage_start = time.perf_counter()
+                with record_stage("t2s.boundary_check"):
+                    add_profile_stat(profile_chunk_stats, profile_total_stats, "boundary_ms", stage_start)
+                yield_tokens = int(token_counter)
+                profile_event(
+                    "thin_tts_profile_t2s_chunk",
+                    chunk_index=profile_chunk_idx,
+                    is_final=False,
+                    generated_tokens=int(y_len_total - prefix_len),
+                    yield_tokens=yield_tokens,
+                    token_counter=int(token_counter),
+                    curr_ptr=int(curr_ptr),
+                    x_len=int(x_len),
+                    prefix_len=int(prefix_len),
+                    **rounded_stats(profile_chunk_stats),
+                )
+                torch_profile_toggle(False)
                 yield y_buf[:, y_len_total-token_counter:y_len_total], False
+                torch_profile_toggle(True)
                 curr_ptr+=token_counter
                 token_counter = 0
+                profile_chunk_idx += 1
+                profile_chunk_stats = new_profile_stats()
 
 
 
             ####################### update next step ###################################
-            y_emb = self.ar_audio_embedding(y_buf[:, y_len_total-1:y_len_total])
-            xy_pos = y_emb * self.ar_audio_position.x_scale + self.ar_audio_position.alpha * self.ar_audio_position.pe[
-                :, y_len + idx
-            ]
+            sync_profile_cuda()
+            stage_start = time.perf_counter()
+            with record_stage("t2s.embed_next"):
+                y_emb = self.ar_audio_embedding(y_buf[:, y_len_total-1:y_len_total])
+                xy_pos = y_emb * self.ar_audio_position.x_scale + self.ar_audio_position.alpha * self.ar_audio_position.pe[
+                    :, y_len + idx
+                ]
+            add_profile_stat(profile_chunk_stats, profile_total_stats, "embed_ms", stage_start)
 
 
 
         if not streaming_mode:
+            profile_event(
+                "thin_tts_profile_t2s_total",
+                generated_tokens=int(y_len_total - prefix_len),
+                x_len=int(x_len),
+                prefix_len=int(prefix_len),
+                **rounded_stats(profile_total_stats),
+            )
+            torch_profile_finish()
             if ref_free:
                 yield y_buf[:, :y_len_total], 0
             yield y_buf[:, :y_len_total], idx
+        else:
+            profile_event(
+                "thin_tts_profile_t2s_total",
+                generated_tokens=int(y_len_total - prefix_len),
+                x_len=int(x_len),
+                prefix_len=int(prefix_len),
+                **rounded_stats(profile_total_stats),
+            )
+            torch_profile_finish()
 
 
 

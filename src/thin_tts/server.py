@@ -24,6 +24,8 @@ class StreamRequest(BaseModel):
     text: str
     mode: int = 2
     seed: int = 8110
+    min_chunk_length: Optional[int] = None
+    profile_request_id: Optional[str] = None
 
 
 def _load_pipeline():
@@ -119,8 +121,16 @@ def _audio_to_pcm16_bytes(audio: np.ndarray) -> bytes:
     return audio.tobytes()
 
 
-def _request_for(text: str, cfg: ServerConfig, mode: int, seed: int) -> dict:
-    return {
+def _request_for(
+    text: str,
+    cfg: ServerConfig,
+    mode: int,
+    seed: int,
+    min_chunk_length: Optional[int] = None,
+    profile_request_id: Optional[str] = None,
+) -> dict:
+    chunk_length = min_chunk_length if min_chunk_length is not None else 10
+    request = {
         "text": text,
         "text_lang": "zh",
         "ref_audio_path": cfg.ref_audio,
@@ -139,10 +149,12 @@ def _request_for(text: str, cfg: ServerConfig, mode: int, seed: int) -> dict:
         "repetition_penalty": 1.35,
         "sample_steps": 32,
         "overlap_length": 2,
-        "min_chunk_length": 10,
+        "min_chunk_length": chunk_length,
         "fragment_interval": 0.0,
         "seed": seed,
+        "profile_request_id": profile_request_id,
     }
+    return request
 
 
 app = FastAPI(title="Thin TTS Server")
@@ -171,7 +183,14 @@ async def stream(req: StreamRequest):
 
     cfg = _config
     pipeline = _load_pipeline()
-    request_dict = _request_for(req.text, cfg, req.mode, req.seed)
+    request_dict = _request_for(
+        req.text,
+        cfg,
+        req.mode,
+        req.seed,
+        req.min_chunk_length,
+        req.profile_request_id,
+    )
 
     sample_rate = 32000
 

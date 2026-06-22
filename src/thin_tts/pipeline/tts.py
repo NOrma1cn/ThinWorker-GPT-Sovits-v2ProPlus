@@ -1,4 +1,5 @@
 import gc
+import json
 import math
 import os
 import random
@@ -17,6 +18,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+
+# Enable Flash Attention optimization (PyTorch 2.0+)
+if torch.cuda.is_available():
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        print("[FlashAttention] Enabled CUDA optimized attention backends")
+    except Exception as e:
+        print(f"[FlashAttention] Could not enable: {e}")
 from thin_tts.models.t2s_lightning_module import Text2SemanticLightningModule
 from thin_tts.models.cnhubert import CNHubert
 from thin_tts.modules.mel_processing import spectrogram_torch
@@ -721,6 +731,16 @@ class TTS:
         min_chunk_length = inputs.get("min_chunk_length", 16)
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
+        profile_timing = bool(os.environ.get("THIN_TTS_PROFILE")) or inputs.get("profile_timing", False)
+        profile_request_id = inputs.get("profile_request_id") or str(time.time_ns())
+
+        def profile_event(event: str, **fields):
+            if profile_timing:
+                print(json.dumps({"event": event, "request_id": profile_request_id, **fields}, ensure_ascii=False), flush=True)
+
+        def sync_profile_cuda():
+            if profile_timing and torch.cuda.is_available() and str(self.configs.device).startswith("cuda"):
+                torch.cuda.synchronize()
 
         if parallel_infer and not streaming_mode:
             print(i18n("并行推理模式已开启"))
@@ -868,6 +888,15 @@ class TTS:
                 return batch[0]
 
         t2 = time.perf_counter()
+        profile_event(
+            "thin_tts_profile_setup",
+            ref_ms=round((t1 - t0) * 1000, 1),
+            text_prepare_ms=round((t2 - t1) * 1000, 1),
+            text_chars=len(text),
+            streaming_mode=streaming_mode,
+            fixed_length_chunk=fixed_length_chunk,
+            min_chunk_length=min_chunk_length,
+        )
         try:
             print("############ 推理 ############")
             ###### inference ######
@@ -876,12 +905,14 @@ class TTS:
             audio = []
             is_first_package = True
             output_sr = self.configs.sampling_rate
-            for item in data:
+            for item_index, item in enumerate(data):
                 t3 = time.perf_counter()
+                batch_start = t3
                 if return_fragment or streaming_mode:
                     item = make_batch(item)
                     if item is None:
                         continue
+                batch_end = time.perf_counter()
 
                 batch_phones: List[torch.LongTensor] = item["phones"]
                 # batch_phones:torch.LongTensor = item["phones"]
@@ -891,6 +922,7 @@ class TTS:
                 all_bert_features: torch.LongTensor = item["all_bert_features"]
                 norm_text: str = item["norm_text"]
                 max_len = item["max_len"]
+                norm_text_chars = len(norm_text)
 
                 print(i18n("前端处理后的文本(每句):"), norm_text)
                 if no_prompt_text:
@@ -914,6 +946,15 @@ class TTS:
                         for _, audio_tensor in self.prompt_cache["refer_spec"]:
                             sv_emb.append(self.sv_model.compute_embedding3(audio_tensor))
                         self.prompt_cache["sv_emb_list"] = list(sv_emb)
+                prepare_end = time.perf_counter()
+                profile_event(
+                    "thin_tts_profile_item",
+                    item_index=item_index,
+                    batch_ms=round((batch_end - batch_start) * 1000, 1),
+                    prepare_ms=round((prepare_end - batch_end) * 1000, 1),
+                    norm_text_chars=norm_text_chars,
+                    max_len=int(max_len) if isinstance(max_len, int) else max_len,
+                )
 
                 if not streaming_mode:
                     print(f"############ {i18n('预测语义Token')} ############")
@@ -1005,6 +1046,8 @@ class TTS:
                         chunk_length=min_chunk_length,
                         mute_emb_sim_matrix=self.configs.mute_emb_sim_matrix if not fixed_length_chunk else None,
                         chunk_split_thershold=chunk_split_thershold,
+                        profile_timing=profile_timing,
+                        profile_request_id=profile_request_id,
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
@@ -1019,10 +1062,17 @@ class TTS:
                     overlap_len = overlap_length
                     overlap_size = math.ceil(overlap_length*upsample_rate)
                     cached_ge = None
+                    profile_chunk_idx = 0
+                    sync_profile_cuda()
+                    t2s_wait_start = time.perf_counter()
                     for semantic_tokens, is_final in semantic_token_generator:
+                        sync_profile_cuda()
+                        semantic_ready = time.perf_counter()
+                        t2s_wait_ms = (semantic_ready - t2s_wait_start) * 1000
                         if semantic_tokens is None and last_audio_chunk is not None:
                             if overlap_size > 0:
-                                yield self.audio_postprocess(
+                                post_start = time.perf_counter()
+                                processed = self.audio_postprocess(
                                     [[last_audio_chunk[-overlap_size:]]],
                                     output_sr,
                                     None,
@@ -1030,6 +1080,15 @@ class TTS:
                                     False,
                                     0.0,
                                 )
+                                post_ms = (time.perf_counter() - post_start) * 1000
+                                profile_event(
+                                    "thin_tts_profile_tail",
+                                    item_index=item_index,
+                                    chunk_index=profile_chunk_idx,
+                                    post_ms=round(post_ms, 1),
+                                    elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
+                                )
+                                yield processed
                             break
 
                         _semantic_tokens = semantic_tokens
@@ -1047,6 +1106,8 @@ class TTS:
 
                         token_padding_length = 0
 
+                        sync_profile_cuda()
+                        vits_start = time.perf_counter()
                         audio_chunk, latent, latent_mask, cached_ge = self.vits_model.decode_streaming(
                                                 _semantic_tokens.unsqueeze(0),
                                                 phones, refer_audio_spec,
@@ -1058,8 +1119,11 @@ class TTS:
                                                 padding_length=token_padding_length,
                                                 cached_ge=cached_ge,
                                             )
+                        sync_profile_cuda()
+                        vits_ms = (time.perf_counter() - vits_start) * 1000
                         audio_chunk=audio_chunk.detach()[0, 0, :]
 
+                        splice_start = time.perf_counter()
                         if overlap_len>overlap_length:
                             audio_chunk=audio_chunk[-int((overlap_length+semantic_tokens.shape[-1])*upsample_rate):]
 
@@ -1078,10 +1142,12 @@ class TTS:
                                     audio_chunk_[last_audio_chunk.shape[0]-overlap_size:-overlap_size] if not is_final \
                                         else audio_chunk_[last_audio_chunk.shape[0]-overlap_size:]
                                         )
+                        splice_ms = (time.perf_counter() - splice_start) * 1000
 
                         last_latent = latent
                         last_audio_chunk = audio_chunk
-                        yield self.audio_postprocess(
+                        post_start = time.perf_counter()
+                        processed = self.audio_postprocess(
                                 [[audio_chunk_]],
                                 output_sr,
                                 None,
@@ -1089,10 +1155,31 @@ class TTS:
                                 False,
                                 0.0,
                             )
+                        post_ms = (time.perf_counter() - post_start) * 1000
+                        chunk_elapsed_ms = (time.perf_counter() - t0) * 1000
+                        profile_event(
+                            "thin_tts_profile_chunk",
+                            item_index=item_index,
+                            chunk_index=profile_chunk_idx,
+                            t2s_wait_ms=round(t2s_wait_ms, 1),
+                            vits_ms=round(vits_ms, 1),
+                            splice_ms=round(splice_ms, 1),
+                            post_ms=round(post_ms, 1),
+                            elapsed_ms=round(chunk_elapsed_ms, 1),
+                            new_tokens=int(semantic_tokens.shape[-1]),
+                            total_tokens=int(_semantic_tokens.shape[-1]),
+                            audio_samples=int(processed[1].shape[-1]) if hasattr(processed[1], "shape") else len(processed[1]),
+                            is_final=bool(is_final),
+                            first_package=bool(is_first_package),
+                        )
+                        yield processed
 
                         if is_first_package:
                             print(f"first_package_delay: {time.perf_counter()-t0:.3f}")
                             is_first_package = False
+                        profile_chunk_idx += 1
+                        sync_profile_cuda()
+                        t2s_wait_start = time.perf_counter()
 
 
                     yield output_sr, np.zeros(int(output_sr*fragment_interval), dtype=np.int16)
