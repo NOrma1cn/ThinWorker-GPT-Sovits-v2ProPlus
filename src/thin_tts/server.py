@@ -22,7 +22,7 @@ _config: Optional[ServerConfig] = None
 
 class StreamRequest(BaseModel):
     text: str
-    mode: int = 3
+    mode: int = 2
     seed: int = 8110
 
 
@@ -72,7 +72,7 @@ def _load_pipeline():
         "streaming_mode": True,
         "parallel_infer": False,
         "split_bucket": False,
-        "fixed_length_chunk": True,
+        "fixed_length_chunk": False,
         "top_k": 15,
         "top_p": 0.6,
         "temperature": 0.6,

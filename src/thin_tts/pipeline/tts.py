@@ -1014,7 +1014,6 @@ class TTS:
                     upsample_rate = math.prod(self.vits_model.upsample_rates)*((2 if self.vits_model.semantic_frame_rate == "25hz" else 1)/speed_factor)
 
                     last_audio_chunk = None
-                    # last_tokens = None
                     last_latent = None
                     previous_tokens = []
                     overlap_len = overlap_length
@@ -1022,7 +1021,8 @@ class TTS:
                     cached_ge = None
                     for semantic_tokens, is_final in semantic_token_generator:
                         if semantic_tokens is None and last_audio_chunk is not None:
-                            yield self.audio_postprocess(
+                            if overlap_size > 0:
+                                yield self.audio_postprocess(
                                     [[last_audio_chunk[-overlap_size:]]],
                                     output_sr,
                                     None,
@@ -1056,7 +1056,7 @@ class TTS:
                                                 overlap_frames=last_latent[:,:,-overlap_len*(2 if self.vits_model.semantic_frame_rate == "25hz" else 1):] \
                                                 if last_latent is not None else None,
                                                 padding_length=token_padding_length,
-                                                cached_ge=cached_ge
+                                                cached_ge=cached_ge,
                                             )
                         audio_chunk=audio_chunk.detach()[0, 0, :]
 
@@ -1066,15 +1066,18 @@ class TTS:
                         audio_chunk_ = audio_chunk
                         if is_first_chunk and not is_final:
                             is_first_chunk = False
-                            audio_chunk_ = audio_chunk_[:-overlap_size]
-                        elif is_first_chunk and is_final: 
+                            if overlap_size > 0:
+                                audio_chunk_ = audio_chunk_[:-overlap_size]
+                        elif is_first_chunk and is_final:
                             is_first_chunk = False
                         elif not is_first_chunk and not is_final:
-                            audio_chunk_ = self.sola_algorithm([last_audio_chunk, audio_chunk_], overlap_size)
-                            audio_chunk_ = (
-                                audio_chunk_[last_audio_chunk.shape[0]-overlap_size:-overlap_size] if not is_final \
-                                    else audio_chunk_[last_audio_chunk.shape[0]-overlap_size:]
-                                    )
+                            if overlap_size > 0:
+                                # SOLA crossfade for smooth chunk transitions
+                                audio_chunk_ = self.sola_algorithm([last_audio_chunk, audio_chunk_], overlap_size)
+                                audio_chunk_ = (
+                                    audio_chunk_[last_audio_chunk.shape[0]-overlap_size:-overlap_size] if not is_final \
+                                        else audio_chunk_[last_audio_chunk.shape[0]-overlap_size:]
+                                        )
 
                         last_latent = latent
                         last_audio_chunk = audio_chunk
@@ -1086,8 +1089,8 @@ class TTS:
                                 False,
                                 0.0,
                             )
-                        
-                        if is_first_package: 
+
+                        if is_first_package:
                             print(f"first_package_delay: {time.perf_counter()-t0:.3f}")
                             is_first_package = False
 
@@ -1168,6 +1171,8 @@ class TTS:
 
         for i, batch in enumerate(audio):
             for j, audio_fragment in enumerate(batch):
+                if audio_fragment.numel() == 0:
+                    continue
                 max_audio = torch.abs(audio_fragment).max()  # 简单防止16bit爆音
                 if max_audio > 1:
                     audio_fragment /= max_audio
@@ -1191,25 +1196,18 @@ class TTS:
         overlap_len: int,
         search_len:int= 320
     ):
-        # overlap_len-=search_len
-
         dtype = audio_fragments[0].dtype
-        
+
         for i in range(len(audio_fragments) - 1):
             f1 = audio_fragments[i].float()
             f2 = audio_fragments[i + 1].float()
             w1 = f1[-overlap_len:]
             w2 = f2[:overlap_len+search_len]
-            # w2 = w2[-w2.shape[-1]//2:]
-            # assert w1.shape == w2.shape
-            corr_norm = F.conv1d(w2.view(1, 1, -1), w1.view(1, 1, -1)).view(-1)
 
+            corr_norm = F.conv1d(w2.view(1, 1, -1), w1.view(1, 1, -1)).view(-1)
             corr_den = F.conv1d(w2.view(1, 1, -1)**2, torch.ones_like(w1).view(1, 1, -1)).view(-1)+ 1e-8
             idx = (corr_norm/corr_den.sqrt()).argmax()
 
-            print(f"seg_idx: {idx}")
-
-            # idx = corr.argmax()
             f1_ = f1[: -overlap_len]
             audio_fragments[i] = f1_
 
@@ -1220,12 +1218,44 @@ class TTS:
                 + window[overlap_len :] * f1[-overlap_len :]
             )
 
-            # window = torch.sin(torch.arange((overlap_len - idx), device=f1.device) * np.pi / (overlap_len - idx))
-            # f2_[: (overlap_len - idx)] = (
-            #     window * f2_[: (overlap_len - idx)]
-            #     + (1-window) * f1[-(overlap_len - idx) :]
-            # )
-
             audio_fragments[i + 1] = f2_
 
         return torch.cat(audio_fragments, 0).to(dtype)
+
+    def _zero_crossing_splice(
+        self,
+        prev_chunk: torch.Tensor,
+        curr_chunk: torch.Tensor,
+        overlap_size: int,
+    ) -> torch.Tensor:
+        """Splice two audio chunks at zero-crossing points within the overlap region.
+
+        Clean hard cut at zero-crossing - no crossfade blending.
+        Returns concatenated audio; caller trims overlap regions.
+        """
+        prev_tail = prev_chunk[-overlap_size:]
+        curr_head = curr_chunk[:overlap_size]
+
+        # Find zero-crossings (sign changes)
+        prev_signs = torch.sign(prev_tail)
+        prev_crossings = torch.where(prev_signs[:-1] != prev_signs[1:])[0]
+        curr_signs = torch.sign(curr_head)
+        curr_crossings = torch.where(curr_signs[:-1] != curr_signs[1:])[0]
+
+        # Pick crossing closest to center
+        center = overlap_size // 2
+        if len(prev_crossings) > 0:
+            prev_cut = prev_crossings[(prev_crossings - center).abs().argmin()].item()
+        else:
+            prev_cut = center
+
+        if len(curr_crossings) > 0:
+            curr_cut = curr_crossings[(curr_crossings - center).abs().argmin()].item()
+        else:
+            curr_cut = center
+
+        # Hard cut at zero-crossings
+        return torch.cat([
+            prev_chunk[:prev_chunk.shape[0] - overlap_size + prev_cut],
+            curr_chunk[curr_cut:]
+        ], dim=0)
