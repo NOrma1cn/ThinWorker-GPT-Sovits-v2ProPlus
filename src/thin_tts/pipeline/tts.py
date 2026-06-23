@@ -1283,8 +1283,21 @@ class TTS:
         self,
         audio_fragments: List[torch.Tensor],
         overlap_len: int,
-        search_len:int= 320
+        search_len:int= 320,
+        silence_threshold: float = 0.02
     ):
+        """SOLA overlap-add splice.
+
+        Near-silent cuts (w1 rms < silence_threshold) skip the NCC lag search
+        and splice at lag=0. At near-zero energy the NCC = dot/energy divides
+        ~0/~0, so the argmax lag is arbitrary noise; applying it shifts the next
+        fragment by a few ms and re-times the voiced region that follows the
+        silent gap, producing an audible "rewound / two-voices" artifact. Silence
+        blends to silence harmlessly at lag 0, so the shift is pure loss and we
+        skip it. silence_threshold=0.02 sits between the measured bad-seam rms
+        (all < 0.015, the 0/0 region) and good-seam rms (starts ~0.03), covering
+        edge cases at 0.0117/0.0148 without touching genuine low-energy voiced cuts.
+        """
         dtype = audio_fragments[0].dtype
 
         for i in range(len(audio_fragments) - 1):
@@ -1293,9 +1306,12 @@ class TTS:
             w1 = f1[-overlap_len:]
             w2 = f2[:overlap_len+search_len]
 
-            corr_norm = F.conv1d(w2.view(1, 1, -1), w1.view(1, 1, -1)).view(-1)
-            corr_den = F.conv1d(w2.view(1, 1, -1)**2, torch.ones_like(w1).view(1, 1, -1)).view(-1)+ 1e-8
-            idx = (corr_norm/corr_den.sqrt()).argmax()
+            if float(w1.pow(2).mean().sqrt()) < silence_threshold:
+                idx = 0  # near-silent: NCC divides ~0/~0, skip arbitrary lag
+            else:
+                corr_norm = F.conv1d(w2.view(1, 1, -1), w1.view(1, 1, -1)).view(-1)
+                corr_den = F.conv1d(w2.view(1, 1, -1)**2, torch.ones_like(w1).view(1, 1, -1)).view(-1)+ 1e-8
+                idx = (corr_norm/corr_den.sqrt()).argmax()
 
             f1_ = f1[: -overlap_len]
             audio_fragments[i] = f1_
