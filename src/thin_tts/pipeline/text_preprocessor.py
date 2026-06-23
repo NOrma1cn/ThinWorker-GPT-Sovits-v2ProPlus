@@ -153,11 +153,14 @@ class TextPreprocessor:
             res = self.bert_model(**inputs, output_hidden_states=True)
             res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
         assert len(word2ph) == len(text)
-        phone_level_feature = []
-        for i in range(len(word2ph)):
-            repeat_feature = res[i].repeat(word2ph[i], 1)
-            phone_level_feature.append(repeat_feature)
-        phone_level_feature = torch.cat(phone_level_feature, dim=0)
+        # Vectorized phone-level feature: one indexed gather instead of a python
+        # loop doing res[i].repeat(word2ph[i]) per word. repeat_interleave of the
+        # row indices by word2ph yields exactly the "row i repeated word2ph[i]
+        # times" gather, equivalent to the old cat-of-repeats but without the loop.
+        indices = torch.repeat_interleave(
+            torch.arange(len(word2ph)), torch.tensor(word2ph, device=res.device)
+        )
+        phone_level_feature = res[indices]
         return phone_level_feature.T
 
     def clean_text_inf(self, text: str, language: str, version: str = "v2"):
