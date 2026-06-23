@@ -967,6 +967,10 @@ class Text2SemanticDecoder(nn.Module):
         mute_emb_sim_matrix = kwargs.get("mute_emb_sim_matrix", None)
         chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)
         check_token_num = 2
+        # mode 4 (hybrid): when >0, a chunk whose accumulation crosses this token
+        # count is force-cut at fixed length (mode-3 behaviour) instead of waiting
+        # for a mute boundary. Only takes effect while mute_emb_sim_matrix is set.
+        hybrid_switch_tokens = int(kwargs.get("hybrid_switch_tokens", 0) or 0)
         MAX_SEQ_LEN = 1536
 
         x = self.ar_text_embedding(x)
@@ -1152,7 +1156,8 @@ class Text2SemanticDecoder(nn.Module):
                 break
 
 
-            if streaming_mode and (mute_emb_sim_matrix is not None) and (token_counter >= chunk_length+check_token_num):
+            force_fixed = hybrid_switch_tokens > 0 and token_counter >= hybrid_switch_tokens
+            if streaming_mode and (mute_emb_sim_matrix is not None) and (not force_fixed) and (token_counter >= chunk_length+check_token_num):
                 sync_profile_cuda()
                 stage_start = time.perf_counter()
                 with record_stage("t2s.boundary_check"):
@@ -1188,7 +1193,9 @@ class Text2SemanticDecoder(nn.Module):
                     add_profile_stat(profile_chunk_stats, profile_total_stats, "boundary_ms", stage_start)
 
 
-            elif streaming_mode and (mute_emb_sim_matrix is None) and (token_counter >= chunk_length):
+            elif streaming_mode and ((mute_emb_sim_matrix is None) or force_fixed) and (token_counter >= chunk_length):
+                if force_fixed:
+                    print(f"[mode4] deadline hit at token_counter={token_counter} (hybrid_switch_tokens={hybrid_switch_tokens}), force fixed-length cut")
                 sync_profile_cuda()
                 stage_start = time.perf_counter()
                 with record_stage("t2s.boundary_check"):

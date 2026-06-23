@@ -730,6 +730,7 @@ class TTS:
         overlap_length = inputs.get("overlap_length", 2)
         min_chunk_length = inputs.get("min_chunk_length", 16)
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
+        hybrid_switch_tokens = inputs.get("hybrid_switch_tokens", 0)
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
         profile_timing = bool(os.environ.get("THIN_TTS_PROFILE")) or inputs.get("profile_timing", False)
         profile_request_id = inputs.get("profile_request_id") or str(time.time_ns())
@@ -1046,6 +1047,7 @@ class TTS:
                         chunk_length=min_chunk_length,
                         mute_emb_sim_matrix=self.configs.mute_emb_sim_matrix if not fixed_length_chunk else None,
                         chunk_split_thershold=chunk_split_thershold,
+                        hybrid_switch_tokens=hybrid_switch_tokens,
                         profile_timing=profile_timing,
                         profile_request_id=profile_request_id,
                     )

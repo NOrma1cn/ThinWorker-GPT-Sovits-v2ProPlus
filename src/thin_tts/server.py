@@ -25,6 +25,7 @@ class StreamRequest(BaseModel):
     mode: int = 2
     seed: int = 8110
     min_chunk_length: Optional[int] = None
+    hybrid_switch_tokens: Optional[int] = None
     profile_request_id: Optional[str] = None
 
 
@@ -127,9 +128,20 @@ def _request_for(
     mode: int,
     seed: int,
     min_chunk_length: Optional[int] = None,
+    hybrid_switch_tokens: Optional[int] = None,
     profile_request_id: Optional[str] = None,
 ) -> dict:
     chunk_length = min_chunk_length if min_chunk_length is not None else 10
+    # mode 4 = hybrid: early chunks use mode-2 mute-boundary detection for clean
+    # splices, but if a chunk accumulates past this deadline without finding a
+    # boundary, force a fixed-length cut (mode 3). Caps mode-2's worst-case
+    # first-packet latency while keeping clean cuts where pauses are easy.
+    #
+    # Default 50 (not 2*chunk_length): below ~40-50 tokens the streaming splice
+    # (SOLA overlap_frames handoff) leaks an audible repeat/rewind artifact.
+    # Measured clean at chunk=50 (first-packet ~665ms, ~2x faster than mode 2).
+    if mode == 4 and hybrid_switch_tokens is None:
+        hybrid_switch_tokens = 50
     request = {
         "text": text,
         "text_lang": "zh",
@@ -142,7 +154,7 @@ def _request_for(
         "streaming_mode": mode >= 2,
         "parallel_infer": mode < 2,
         "split_bucket": mode < 2,
-        "fixed_length_chunk": mode >= 3,
+        "fixed_length_chunk": mode == 3,
         "top_k": 15,
         "top_p": 0.6,
         "temperature": 0.6,
@@ -150,6 +162,7 @@ def _request_for(
         "sample_steps": 32,
         "overlap_length": 2,
         "min_chunk_length": chunk_length,
+        "hybrid_switch_tokens": hybrid_switch_tokens or 0,
         "fragment_interval": 0.0,
         "seed": seed,
         "profile_request_id": profile_request_id,
@@ -189,6 +202,7 @@ async def stream(req: StreamRequest):
         req.mode,
         req.seed,
         req.min_chunk_length,
+        req.hybrid_switch_tokens,
         req.profile_request_id,
     )
 
