@@ -37,6 +37,7 @@ from thin_tts.i18n.i18n import I18nAuto, scan_language_list
 from thin_tts.text.text_segmentation import splits
 from thin_tts.pipeline.text_preprocessor import TextPreprocessor
 from thin_tts.models.sv import SV
+from thin_tts.backends import configure_t2s_backend
 
 resample_transform_dict = {}
 
@@ -93,6 +94,7 @@ class TTS_Config:
             "cnhuhbert_base_path": "GPT_SoVITS/pretrained_models/chinese-hubert-base",
             "bert_base_path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
             "sv_path": "GPT_SoVITS/pretrained_models/sv.pth",
+            "t2s_backend": "auto",
         },
     }
     configs: dict = None
@@ -137,6 +139,7 @@ class TTS_Config:
         self.bert_base_path = self.configs.get("bert_base_path", None)
         self.cnhuhbert_base_path = self.configs.get("cnhuhbert_base_path", None)
         self.sv_path = self.configs.get("sv_path", None)
+        self.t2s_backend = self.configs.get("t2s_backend", "auto")
 
         if (self.t2s_weights_path in [None, ""]) or (not os.path.exists(self.t2s_weights_path)):
             self.t2s_weights_path = self.default_configs["v2ProPlus"]["t2s_weights_path"]
@@ -196,6 +199,7 @@ class TTS_Config:
             "bert_base_path": self.bert_base_path,
             "cnhuhbert_base_path": self.cnhuhbert_base_path,
             "sv_path": self.sv_path,
+            "t2s_backend": self.t2s_backend,
         }
         return self.config
 
@@ -236,6 +240,9 @@ class TTS:
 
         self._init_models()
 
+        self.t2s_backend = None
+        self._configure_t2s_backend()
+
         self.text_preprocessor: TextPreprocessor = TextPreprocessor(
             self.bert_model, self.bert_tokenizer, self.configs.device
         )
@@ -263,6 +270,17 @@ class TTS:
         self.init_bert_weights(self.configs.bert_base_path)
         self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
         # self.enable_half_precision(self.configs.is_half)
+
+    def _configure_t2s_backend(self):
+        previous = getattr(self, "t2s_backend", None)
+        if previous is not None:
+            previous.restore()
+        self.t2s_backend = configure_t2s_backend(
+            self.t2s_model.model,
+            requested=self.configs.t2s_backend,
+            device=self.configs.device,
+            is_half=self.configs.is_half,
+        )
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
@@ -1224,12 +1242,15 @@ class TTS:
             # 必须返回一个空音频, 否则会导致显存不释放。
             yield 16000, np.zeros(int(16000), dtype=np.int16)
             # 重置模型, 否则会导致显存释放不完全。
+            if self.t2s_backend is not None:
+                self.t2s_backend.restore()
             del self.t2s_model
             del self.vits_model
             self.t2s_model = None
             self.vits_model = None
             self.init_t2s_weights(self.configs.t2s_weights_path)
             self.init_vits_weights(self.configs.vits_weights_path)
+            self._configure_t2s_backend()
             raise e
     def empty_cache(self):
         """Explicitly release cached allocator memory after an OOM or model swap.

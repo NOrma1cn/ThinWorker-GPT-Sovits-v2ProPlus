@@ -2,6 +2,16 @@
 
 本文档记录了从 GPT-SoVITS 原始代码到 thin-tts-server 独立包过程中的所有修改，包括裁剪、Bug 修复、性能优化，以及已尝试但不可行的方向。
 
+## Unreleased — 正式 Linux/Triton 后端
+
+- 将动态 `seq_len` Triton attention 和 24 层 Full CUDA Graph 提升为正式可选后端。
+- `auto | sdpa | triton` 配置支持 CLI、YAML 与环境变量；Windows/CPU/FP32/Triton 缺失时自动使用 SDPA。
+- prompt 直接复用固定地址 KV cache，warmup 捕获一次后跨请求、跨长度复用同一张 Graph。
+- 捕获、输入形状或 replay 失败时恢复 KV 长度并重算当前 token，随后保持 SDPA fallback。
+- `/health` 和结构化日志暴露 active backend、capture count、Graph 显存与 fallback reason。
+- 独立包可加载旧 SoVITS checkpoint 中的 `utils.HParams`，无需把完整 GPT-SoVITS 加入 `sys.path`。
+- 正式路径 5 次实测：opening 首包 `198.6 → 146.7 ms`（-26.1%），long stress `265.5 → 193.3 ms`（-27.2%）；完整生成下降 52–54%。
+
 ## v0.1.1 — 推理稳定性与 Linux/Triton POC
 
 **生产路径（API 与采样默认值不变）：**

@@ -14,6 +14,12 @@ def main():
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Torch device")
     parser.add_argument("--half", action="store_true", default=True, help="Enable FP16 (default: True)")
     parser.add_argument("--no-half", dest="half", action="store_false", help="Disable FP16")
+    parser.add_argument(
+        "--t2s-backend",
+        choices=["auto", "sdpa", "triton"],
+        default=None,
+        help="T2S backend (default: auto; Linux CUDA may use Triton)",
+    )
 
     # Weight paths
     parser.add_argument("--t2s-weights", default=None, help="Path to T2S/GPT checkpoint (.ckpt)")

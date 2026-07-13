@@ -12,6 +12,31 @@
 - PyTorch 2.1+（需匹配 CUDA 版本）
 - 显存建议 ≥ 4GB（模型运行时约占 2-3GB）
 
+## T2S 推理后端
+
+`t2s_backend` 支持三种模式：
+
+- `auto`（默认）：Linux + CUDA + FP16 + Triton 可用时启用 Full CUDA Graph，否则自动回退 SDPA。
+- `sdpa`：始终使用 PyTorch SDPA，适合 Windows 或故障排查。
+- `triton`：优先使用 Linux/Triton；不兼容或运行失败时仍回退 SDPA。
+
+可以在 YAML 的 `server` 段配置：
+
+```yaml
+server:
+  device: cuda
+  half: true
+  t2s_backend: auto
+```
+
+也可以使用 `--t2s-backend auto|sdpa|triton` 或环境变量
+`THIN_TTS_T2S_BACKEND`。调试时设置 `THIN_TTS_T2S_BACKEND_STRICT=1`，
+会在强制 Triton 不可用或运行失败时直接报错，而不是回退。
+
+服务 warmup 会完成首次 Graph 捕获。`/health` 的 `t2s_backend` 字段会报告
+当前后端、捕获次数、Graph 显存及回退原因。当前 Triton 路径针对 batch=1、
+FP16、单 token AR decode；遇到不兼容形状会自动切回 SDPA。
+
 ## 快速开始
 
 ### 1. 安装 PyTorch（CUDA 版）

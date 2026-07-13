@@ -14,6 +14,7 @@ class ServerConfig:
     port: int = 9881
     device: str = "cuda"
     half: bool = True
+    t2s_backend: str = "auto"
 
     # Weight paths
     t2s_weights: str = ""
@@ -50,6 +51,8 @@ class ServerConfig:
             port=args.port or server_cfg.get("port", 9881),
             device=args.device or server_cfg.get("device", "cuda"),
             half=args.half,
+            t2s_backend=resolve(getattr(args, "t2s_backend", None), "THIN_TTS_T2S_BACKEND",
+                                server_cfg.get("t2s_backend", "auto"), "auto"),
             t2s_weights=resolve(args.t2s_weights, "THIN_TTS_T2S_WEIGHTS",
                                 weights_cfg.get("t2s_weights")),
             vits_weights=resolve(args.vits_weights, "THIN_TTS_VITS_WEIGHTS",
@@ -72,6 +75,13 @@ class ServerConfig:
         return cfg
 
     def _validate(self):
+        self.t2s_backend = str(self.t2s_backend).strip().lower()
+        if self.t2s_backend not in {"auto", "sdpa", "triton"}:
+            print(
+                f"[ERROR] Invalid t2s_backend {self.t2s_backend!r}; expected auto, sdpa, or triton",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         required = {
             "t2s_weights": self.t2s_weights,
             "vits_weights": self.vits_weights,

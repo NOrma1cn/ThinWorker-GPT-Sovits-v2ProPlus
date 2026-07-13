@@ -1,11 +1,12 @@
 import os
+import sys
+import types
+from io import BytesIO
+
 import torch
 from thin_tts.i18n.i18n import I18nAuto
 
 i18n = I18nAuto()
-
-
-from io import BytesIO
 
 
 """
@@ -74,13 +75,63 @@ def get_sovits_version_from_path_fast(sovits_path):
     return version, model_version, if_lora_v3
 
 
+class LegacyHParams:
+    """Minimal compatibility type for checkpoints pickled as utils.HParams."""
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            if type(value) is dict:
+                value = LegacyHParams(**value)
+            self[key] = value
+
+    def keys(self):
+        return self.__dict__.keys()
+
+    def items(self):
+        return self.__dict__.items()
+
+    def values(self):
+        return self.__dict__.values()
+
+    def __len__(self):
+        return len(self.__dict__)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        return setattr(self, key, value)
+
+    def __contains__(self, key):
+        return key in self.__dict__
+
+
+def _load_checkpoint(source):
+    try:
+        return torch.load(source, map_location="cpu", weights_only=False)
+    except ModuleNotFoundError as exc:
+        if exc.name != "utils":
+            raise
+
+    previous_utils = sys.modules.get("utils")
+    legacy_utils = types.ModuleType("utils")
+    legacy_utils.HParams = LegacyHParams
+    sys.modules["utils"] = legacy_utils
+    try:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        return torch.load(source, map_location="cpu", weights_only=False)
+    finally:
+        if previous_utils is None:
+            sys.modules.pop("utils", None)
+        else:
+            sys.modules["utils"] = previous_utils
+
+
 def load_sovits_new(sovits_path):
-    f = open(sovits_path, "rb")
-    meta = f.read(2)
-    if meta != b"PK":
-        data = b"PK" + f.read()
-        bio = BytesIO()
-        bio.write(data)
-        bio.seek(0)
-        return torch.load(bio, map_location="cpu", weights_only=False)
-    return torch.load(sovits_path, map_location="cpu", weights_only=False)
+    with open(sovits_path, "rb") as checkpoint_file:
+        meta = checkpoint_file.read(2)
+        if meta != b"PK":
+            data = b"PK" + checkpoint_file.read()
+            return _load_checkpoint(BytesIO(data))
+    return _load_checkpoint(sovits_path)

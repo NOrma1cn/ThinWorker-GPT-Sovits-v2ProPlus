@@ -22,6 +22,29 @@ _config: Optional[ServerConfig] = None
 _INFERENCE_LOCK = threading.Lock()
 
 
+def _backend_status(pipeline) -> dict:
+    if pipeline is None:
+        return {
+            "requested": None,
+            "active": "unloaded",
+            "state": "unloaded",
+            "fallback_reason": None,
+            "capture_count": 0,
+            "graph_memory_mb": None,
+        }
+    backend = getattr(pipeline, "t2s_backend", None)
+    if backend is None or not hasattr(backend, "status_dict"):
+        return {
+            "requested": None,
+            "active": "sdpa",
+            "state": "unmanaged",
+            "fallback_reason": None,
+            "capture_count": 0,
+            "graph_memory_mb": None,
+        }
+    return backend.status_dict()
+
+
 class StreamRequest(BaseModel):
     text: str
     mode: int = 2
@@ -60,6 +83,7 @@ def _load_pipeline():
             "bert_base_path": cfg.bert_path,
             "cnhuhbert_base_path": cfg.hubert_path,
             "sv_path": cfg.sv_path,
+            "t2s_backend": cfg.t2s_backend,
         }
     }
 
@@ -217,6 +241,7 @@ async def health():
         "server": "thin-tts-server",
         "loaded": PIPELINE is not None,
         "streaming": True,
+        "t2s_backend": _backend_status(PIPELINE),
     }
 
 
@@ -254,5 +279,10 @@ def run(cfg: ServerConfig):
     _config = cfg
     print(json.dumps({"event": "thin_tts_loading"}), flush=True)
     _load_pipeline()
-    print(json.dumps({"event": "thin_tts_ready", "host": cfg.host, "port": cfg.port}), flush=True)
+    print(json.dumps({
+        "event": "thin_tts_ready",
+        "host": cfg.host,
+        "port": cfg.port,
+        "t2s_backend": _backend_status(PIPELINE),
+    }), flush=True)
     uvicorn.run(app, host=cfg.host, port=cfg.port)
