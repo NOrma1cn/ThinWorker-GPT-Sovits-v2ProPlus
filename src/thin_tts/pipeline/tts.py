@@ -1231,10 +1231,12 @@ class TTS:
             self.init_t2s_weights(self.configs.t2s_weights_path)
             self.init_vits_weights(self.configs.vits_weights_path)
             raise e
-        finally:
-            self.empty_cache()
-
     def empty_cache(self):
+        """Explicitly release cached allocator memory after an OOM or model swap.
+
+        This is intentionally not called after every request: doing so defeats
+        PyTorch's caching allocator and increases the next request's latency.
+        """
         try:
             gc.collect()  # 触发gc的垃圾回收。避免内存一直增长。
             if "cuda" in str(self.configs.device):

@@ -3,6 +3,7 @@ import json
 import os
 import struct
 import sys
+import threading
 import time
 from io import BytesIO
 from typing import Optional
@@ -18,6 +19,7 @@ from thin_tts.config import ServerConfig
 
 PIPELINE = None
 _config: Optional[ServerConfig] = None
+_INFERENCE_LOCK = threading.Lock()
 
 
 class StreamRequest(BaseModel):
@@ -41,6 +43,9 @@ def _load_pipeline():
         os.environ["bert_path"] = cfg.bert_path
     if cfg.sv_path:
         os.environ["THIN_TTS_SV_PATH"] = cfg.sv_path
+    # tqdm writes synchronously on every decode step. Keep production serving
+    # quiet by default while allowing an explicit false value to opt back in.
+    os.environ.setdefault("THIN_TTS_DISABLE_TQDM", "1")
 
     import torch
     from thin_tts.pipeline.tts import TTS, TTS_Config
@@ -170,6 +175,32 @@ def _request_for(
     return request
 
 
+def _stream_audio(pipeline, request_dict: dict, sample_rate: int):
+    """Stream one request while exclusively owning the stateful pipeline.
+
+    T2S KV caches, RNG state, prompt caches, and the stop flag live on the
+    singleton pipeline. Holding the lock for the generator's full lifetime
+    prevents concurrent requests from corrupting that shared state. The
+    context manager also releases the lock when a client disconnects and the
+    response generator is closed.
+    """
+    with _INFERENCE_LOCK:
+        yield _make_wav_header(sample_rate)
+        t0 = time.perf_counter()
+        chunk_idx = 0
+        for _sr, audio_chunk in pipeline.run(request_dict):
+            pcm_bytes = _audio_to_pcm16_bytes(audio_chunk)
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            print(json.dumps({
+                "event": "thin_tts_chunk",
+                "chunk": chunk_idx,
+                "elapsed_ms": elapsed,
+                "bytes": len(pcm_bytes),
+            }), flush=True)
+            yield pcm_bytes
+            chunk_idx += 1
+
+
 app = FastAPI(title="Thin TTS Server")
 app.add_middleware(
     CORSMiddleware,
@@ -208,24 +239,8 @@ async def stream(req: StreamRequest):
 
     sample_rate = 32000
 
-    def audio_generator():
-        yield _make_wav_header(sample_rate)
-        t0 = time.perf_counter()
-        chunk_idx = 0
-        for sr, audio_chunk in pipeline.run(request_dict):
-            pcm_bytes = _audio_to_pcm16_bytes(audio_chunk)
-            elapsed = round((time.perf_counter() - t0) * 1000)
-            print(json.dumps({
-                "event": "thin_tts_chunk",
-                "chunk": chunk_idx,
-                "elapsed_ms": elapsed,
-                "bytes": len(pcm_bytes),
-            }), flush=True)
-            yield pcm_bytes
-            chunk_idx += 1
-
     return StreamingResponse(
-        audio_generator(),
+        _stream_audio(pipeline, request_dict, sample_rate),
         media_type="audio/wav",
         headers={
             "Cache-Control": "no-store, no-transform",

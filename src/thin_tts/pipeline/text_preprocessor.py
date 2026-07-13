@@ -21,6 +21,16 @@ i18n = I18nAuto(language=language)
 punctuation = set(["!", "?", "…", ",", ".", "-"])
 
 
+def expand_word_features(word_features: torch.Tensor, word2ph: list) -> torch.Tensor:
+    """Repeat word-level BERT rows into phone-level rows on the same device."""
+    repeats = torch.as_tensor(word2ph, dtype=torch.long, device=word_features.device)
+    indices = torch.repeat_interleave(
+        torch.arange(len(word2ph), device=word_features.device),
+        repeats,
+    )
+    return word_features[indices]
+
+
 def get_first(text: str) -> str:
     pattern = "[" + "".join(re.escape(sep) for sep in splits) + "]"
     text = re.split(pattern, text)[0].strip()
@@ -151,16 +161,13 @@ class TextPreprocessor:
             for i in inputs:
                 inputs[i] = inputs[i].to(self.device)
             res = self.bert_model(**inputs, output_hidden_states=True)
-            res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
+            res = torch.cat(res["hidden_states"][-3:-2], -1)[0, 1:-1]
         assert len(word2ph) == len(text)
         # Vectorized phone-level feature: one indexed gather instead of a python
         # loop doing res[i].repeat(word2ph[i]) per word. repeat_interleave of the
         # row indices by word2ph yields exactly the "row i repeated word2ph[i]
         # times" gather, equivalent to the old cat-of-repeats but without the loop.
-        indices = torch.repeat_interleave(
-            torch.arange(len(word2ph)), torch.tensor(word2ph, device=res.device)
-        )
-        phone_level_feature = res[indices]
+        phone_level_feature = expand_word_features(res, word2ph)
         return phone_level_feature.T
 
     def clean_text_inf(self, text: str, language: str, version: str = "v2"):

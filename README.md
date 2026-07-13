@@ -25,7 +25,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ### 2. 安装 thin-tts-server
 
 ```bash
-pip install dist/thin_tts_server-0.1.0-py3-none-any.whl
+pip install dist/thin_tts_server-0.1.1-py3-none-any.whl
 ```
 
 或从源码安装：
@@ -151,6 +151,9 @@ curl -X POST http://localhost:9881/stream \
 | `fragment_interval` | float | 否 | 0.3 | 分句间隔（秒） |
 
 **响应：** `Content-Type: audio/wav`，流式返回 PCM16 WAV 数据。
+
+> 服务器使用一个共享的 GPU 推理 pipeline。并发请求会在服务内排队并串行执行，
+> 以隔离 T2S KV cache、随机数状态和参考音频缓存，避免请求之间互相污染。
 
 ### POST /tts
 

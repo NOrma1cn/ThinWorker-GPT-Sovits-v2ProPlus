@@ -153,9 +153,11 @@ class T2SBlock:
         v = self.to_mask(v, padding_mask)
 
         # Pre-allocate cache buffers to avoid torch.cat memory allocation per token
-        self._k_cache = torch.zeros(batch_size, MAX_SEQ_LEN, self.hidden_dim,
+        # Only the prefix below _seq_len is ever read, so clearing the entire
+        # 1536-token buffer on every request is unnecessary.
+        self._k_cache = torch.empty(batch_size, MAX_SEQ_LEN, self.hidden_dim,
                                     dtype=k.dtype, device=k.device)
-        self._v_cache = torch.zeros(batch_size, MAX_SEQ_LEN, self.hidden_dim,
+        self._v_cache = torch.empty(batch_size, MAX_SEQ_LEN, self.hidden_dim,
                                     dtype=v.dtype, device=v.device)
         self._k_cache[:, :kv_len] = k
         self._v_cache[:, :kv_len] = v

@@ -2,6 +2,25 @@
 
 本文档记录了从 GPT-SoVITS 原始代码到 thin-tts-server 独立包过程中的所有修改，包括裁剪、Bug 修复、性能优化，以及已尝试但不可行的方向。
 
+## v0.1.1 — 推理稳定性与 Linux/Triton POC
+
+**生产路径（API 与采样默认值不变）：**
+
+- 共享 pipeline 在完整流生命周期内串行化，隔离 KV cache、随机数与参考音频状态。
+- 移除每请求 `gc.collect()` / `torch.cuda.empty_cache()`，保留显式 OOM/模型切换清理入口。
+- BERT phone-level 特征保持在 GPU，并使用同设备索引展开。
+- KV cache 改用 `torch.empty`，避免清零不会读取的 1536-token 尾部。
+- 服务默认关闭逐 token tqdm 输出，减少同步打印开销。
+
+**实验性 Linux/Triton POC（尚未作为生产默认后端）：**
+
+- 单张 CUDA Graph 通过设备端 `seq_len` 标量覆盖动态 KV 长度，并融合当前 token 的 K/V 写入。
+- RTX 4080 Laptop / WSL2 实测 Mode 4 首包：opening `216.6 → 154.8 ms`（-28.5%），long stress `271.3 → 187.7 ms`（-30.8%）。
+- 完整生成中位数下降约 54–55%；Graph 仅捕获一次，额外显存约 8.13 MB。
+- 6 组盲听质量测试未发现 Triton 引入的音质退化；共同出现的一处尾部爆音同时存在于 SDPA 与 Triton。
+
+完整 POC 说明见 `prototypes/linux_cuda_graph_backend_poc/NOTES.md`。
+
 ## 打包裁剪
 
 从完整 GPT-SoVITS 仓库精简为推理专用包，去掉了以下内容：
