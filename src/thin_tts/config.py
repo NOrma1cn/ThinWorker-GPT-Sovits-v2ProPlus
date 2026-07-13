@@ -46,11 +46,17 @@ class ServerConfig:
                 return env_val
             return yaml_key if yaml_key else default
 
+        def server_value(name, default):
+            cli_val = getattr(args, name, None)
+            if cli_val is not None:
+                return cli_val
+            return server_cfg.get(name, default)
+
         cfg = cls(
-            host=args.host or server_cfg.get("host", "0.0.0.0"),
-            port=args.port or server_cfg.get("port", 9881),
-            device=args.device or server_cfg.get("device", "cuda"),
-            half=args.half,
+            host=server_value("host", "0.0.0.0"),
+            port=server_value("port", 9881),
+            device=server_value("device", "cuda"),
+            half=server_value("half", True),
             t2s_backend=resolve(getattr(args, "t2s_backend", None), "THIN_TTS_T2S_BACKEND",
                                 server_cfg.get("t2s_backend", "auto"), "auto"),
             t2s_weights=resolve(args.t2s_weights, "THIN_TTS_T2S_WEIGHTS",

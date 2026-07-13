@@ -10,6 +10,7 @@
 - 捕获、输入形状或 replay 失败时恢复 KV 长度并重算当前 token，随后保持 SDPA fallback。
 - `/health` 和结构化日志暴露 active backend、capture count、Graph 显存与 fallback reason。
 - 独立包可加载旧 SoVITS checkpoint 中的 `utils.HParams`，无需把完整 GPT-SoVITS 加入 `sys.path`。
+- 修复未显式传入 CLI 参数时，默认 host、port、device、half 覆盖 YAML 配置的问题。
 - 正式路径 5 次实测：opening 首包 `198.6 → 146.7 ms`（-26.1%），long stress `265.5 → 193.3 ms`（-27.2%）；完整生成下降 52–54%。
 
 ## v0.1.1 — 推理稳定性与 Linux/Triton POC
