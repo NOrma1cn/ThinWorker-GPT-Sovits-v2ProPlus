@@ -50,7 +50,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ### 2. 安装 thin-tts-server
 
 ```bash
-pip install dist/thin_tts_server-0.1.1-py3-none-any.whl
+pip install dist/thin_tts_server-0.2.0-py3-none-any.whl
 ```
 
 或从源码安装：

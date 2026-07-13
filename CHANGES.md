@@ -2,7 +2,7 @@
 
 本文档记录了从 GPT-SoVITS 原始代码到 thin-tts-server 独立包过程中的所有修改，包括裁剪、Bug 修复、性能优化，以及已尝试但不可行的方向。
 
-## Unreleased — 正式 Linux/Triton 后端
+## v0.2.0 — 正式 Linux/Triton 后端
 
 - 将动态 `seq_len` Triton attention 和 24 层 Full CUDA Graph 提升为正式可选后端。
 - `auto | sdpa | triton` 配置支持 CLI、YAML 与环境变量；Windows/CPU/FP32/Triton 缺失时自动使用 SDPA。
