@@ -220,18 +220,61 @@ class TextEncoder(nn.Module):
 
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, y, y_lengths, text, text_lengths, ge, speed=1, test=None, result_length:int=None, overlap_frames:torch.Tensor=None, padding_length:int=None):
+    def encode_target_text(self, text, text_lengths, dtype):
+        text_mask = torch.unsqueeze(
+            commons.sequence_mask(text_lengths, text.size(1)),
+            1,
+        ).to(dtype)
+        text = self.text_embedding(text).transpose(1, 2)
+        text = self.encoder_text(text * text_mask, text_mask)
+        return text, text_mask
+
+    def get_target_text_conditioning(
+        self,
+        text,
+        text_lengths,
+        dtype,
+        *,
+        cached_text=None,
+        cached_mask=None,
+    ):
+        if (cached_text is None) != (cached_mask is None):
+            raise ValueError("cached_text and cached_mask must be provided together")
+        if cached_text is not None:
+            return cached_text, cached_mask
+        return self.encode_target_text(text, text_lengths, dtype)
+
+    def forward(
+        self,
+        y,
+        y_lengths,
+        text,
+        text_lengths,
+        ge,
+        speed=1,
+        test=None,
+        result_length: int = None,
+        overlap_frames: torch.Tensor = None,
+        padding_length: int = None,
+        cached_text=None,
+        cached_text_mask=None,
+        return_text_conditioning=False,
+    ):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(y.dtype)
 
         y = self.ssl_proj(y * y_mask) * y_mask
 
         y = self.encoder_ssl(y * y_mask, y_mask)
 
-        text_mask = torch.unsqueeze(commons.sequence_mask(text_lengths, text.size(1)), 1).to(y.dtype)
         if test == 1:
             text[:, :] = 0
-        text = self.text_embedding(text).transpose(1, 2)
-        text = self.encoder_text(text * text_mask, text_mask)
+        text, text_mask = self.get_target_text_conditioning(
+            text,
+            text_lengths,
+            y.dtype,
+            cached_text=cached_text,
+            cached_mask=cached_text_mask,
+        )
         y = self.mrte(y, y_mask, text, text_mask, ge)
 
         if padding_length is not None and padding_length!=0:
@@ -270,7 +313,10 @@ class TextEncoder(nn.Module):
             y_mask = F.interpolate(y_mask, size=y.shape[-1], mode="nearest")
         stats = self.proj(y) * y_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
-        return y, m, logs, y_mask, y_, y_mask_
+        result = (y, m, logs, y_mask, y_, y_mask_)
+        if return_text_conditioning:
+            return (*result, text, text_mask)
+        return result
 
     def extract_latent(self, x):
         x = self.ssl_proj(x)
@@ -912,7 +958,22 @@ class SynthesizerTrn(nn.Module):
 
 
     @torch.no_grad()
-    def decode_streaming(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None, result_length:int=None, overlap_frames:torch.Tensor=None, padding_length:int=None, cached_ge=None, noise_generator: Optional[torch.Generator] = None):
+    def decode_streaming(
+        self,
+        codes,
+        text,
+        refer,
+        noise_scale=0.5,
+        speed=1,
+        sv_emb=None,
+        result_length: int = None,
+        overlap_frames: torch.Tensor = None,
+        padding_length: int = None,
+        cached_ge=None,
+        cached_encoded_text=None,
+        cached_text_mask=None,
+        noise_generator: Optional[torch.Generator] = None,
+    ):
         def get_ge(refer, sv_emb):
             ge = None
             if refer is not None:
@@ -947,7 +1008,16 @@ class SynthesizerTrn(nn.Module):
             quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
             result_length = (2*result_length) if result_length is not None else None
             padding_length = (2*padding_length) if padding_length is not None else None
-        x, m_p, logs_p, y_mask, y_, y_mask_ = self.enc_p(
+        (
+            x,
+            m_p,
+            logs_p,
+            y_mask,
+            y_,
+            y_mask_,
+            encoded_text,
+            text_mask,
+        ) = self.enc_p(
             quantized,
             y_lengths,
             text,
@@ -956,14 +1026,17 @@ class SynthesizerTrn(nn.Module):
             speed,
             result_length=result_length, 
             overlap_frames=overlap_frames, 
-            padding_length=padding_length
+            padding_length=padding_length,
+            cached_text=cached_encoded_text,
+            cached_text_mask=cached_text_mask,
+            return_text_conditioning=True,
             )
         z_p = m_p + randn_like_with_generator(m_p, noise_generator) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
-        return o, y_, y_mask_, ge
+        return o, y_, y_mask_, ge, encoded_text, text_mask
 
     def extract_latent(self, x):
         ssl = self.ssl_proj(x)

@@ -59,6 +59,7 @@ class StreamRequest(BaseModel):
     hybrid_steady_tokens: Optional[int] = None
     profile_request_id: Optional[str] = None
     rng_isolation: bool = False
+    cache_vits_encoded_text: bool = True
 
 
 def _load_pipeline():
@@ -125,6 +126,7 @@ def _load_pipeline():
         "sample_steps": 32,
         "overlap_length": 2,
         "min_chunk_length": 10,
+        "cache_vits_encoded_text": True,
         "fragment_interval": 0.0,
     }
     for _ in PIPELINE.run(warmup_req):
@@ -174,6 +176,7 @@ def _request_for(
     hybrid_steady_tokens: Optional[int] = None,
     profile_request_id: Optional[str] = None,
     rng_isolation: bool = False,
+    cache_vits_encoded_text: bool = True,
 ) -> dict:
     chunk_length = min_chunk_length if min_chunk_length is not None else 10
     # mode 4 = hybrid: early chunks use mode-2 mute-boundary detection for clean
@@ -212,6 +215,7 @@ def _request_for(
         "seed": seed,
         "profile_request_id": profile_request_id,
         "rng_isolation": rng_isolation,
+        "cache_vits_encoded_text": cache_vits_encoded_text,
     }
     return request
 
@@ -280,6 +284,7 @@ async def stream(req: StreamRequest):
         hybrid_steady_tokens=req.hybrid_steady_tokens,
         profile_request_id=req.profile_request_id,
         rng_isolation=req.rng_isolation,
+        cache_vits_encoded_text=req.cache_vits_encoded_text,
     )
 
     sample_rate = 32000

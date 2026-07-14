@@ -534,3 +534,69 @@ semantic 正确性：
 客观边界指标：两组都没有 clipping。adaptive 的最大单点跳变略高：opening `17096 -> 18864`，long `12578 -> 14368`；p99.9 jump 为 opening `9549 -> 8451`、long `7584 -> 7874`。这些统计不能代替试听，尤其要听更大的 steady chunk 是否带来接缝、重音或语气变化。
 
 用户试听结论：旧 `50/50`、修复重复后的 `50/50`、修复后的 `50/120`，opening 与 long 均未发现质量问题。由此接受 lookahead 正确性修复；adaptive 虽通过质量门槛，但仍因性能门槛失败而不默认启用。
+
+### 2026-07-14：V5-A GE512 cache
+
+状态：拒绝。PCM bitwise 等价通过，但 long total 没有稳定改善；实验实现和 API 开关均未保留。
+
+v2ProPlus 的流式 VITS 已跨 chunk 缓存 GE，但每次仍执行 `ge_to512`。实验增加了显式 `cache_vits_ge512` 开关，只复用第一次计算的 GE512；mode 4 保持 `50/50`，固定 seed `314159` 并启用 request-local RNG。opening/long 各自预热后交替运行基线与缓存组 7 次。
+
+正确性结果：两段文本在所有重复和两种策略间的 WAV SHA-256 分别保持唯一，PCM bitwise equal。
+
+服务端 profile 中位数：
+
+| Text | Policy | First VITS | VITS total | Last chunk elapsed |
+|---|---|---:|---:|---:|
+| opening | baseline | 35.0 ms | 181.9 ms | 594.3 ms |
+| opening | cache GE512 | 34.1 ms | 183.6 ms | 617.0 ms |
+| long | baseline | 42.5 ms | 636.8 ms | 2242.3 ms |
+| long | cache GE512 | 43.4 ms | 618.3 ms | 2288.4 ms |
+
+客户端中位数：
+
+| Text | Policy | PCM TTFB | Total |
+|---|---|---:|---:|
+| opening | baseline | 128.7 ms | 614.7 ms |
+| opening | cache GE512 | 120.2 ms | 632.6 ms |
+| long | baseline | 251.4 ms | 2259.3 ms |
+| long | cache GE512 | 253.3 ms | 2306.4 ms |
+
+long VITS 累计中位数表面改善 18.5 ms（约 2.9%），但逐轮配对差值方向不一致；long 服务端端到端逐轮配对中位差为 `+22.7 ms`，客户端为 `+22.4 ms`。该投影只占 VITS 总成本的极小部分，收益落入运行抖动，没有满足“long total 稳定改善”的 V5 门槛，因此不增加正式链路复杂度。
+
+### 2026-07-14：V5-B Encoded target text cache
+
+状态：接受并默认启用，保留 `cache_vits_encoded_text=false` 请求级回退。
+
+`TextEncoder.forward` 原先在每个 VITS chunk 都重复执行固定 phones 的：
+
+```text
+sequence mask
+-> text embedding
+-> encoder_text Transformer
+```
+
+正式实现只缓存这三步的 encoded text 与 mask。`encoder_ssl`、MRTE、`encoder2`、latent sampling、flow 和 waveform decoder 仍按 chunk 执行；缓存生命周期限制在单个 pipeline item 内，不跨文本请求复用。非流式和训练调用继续使用原来的 6 元返回接口。
+
+实验保持 mode 4 `50/50`、seed `314159`、request-local RNG；opening/long 各自预热后交替运行基线与缓存组 7 次。所有重复和两种策略间的 WAV SHA-256 唯一，PCM bitwise equal。
+
+服务端 profile 中位数：
+
+| Text | Policy | First VITS | VITS total | Last chunk elapsed |
+|---|---|---:|---:|---:|
+| opening | baseline | 37.3 ms | 194.3 ms | 704.9 ms |
+| opening | cache encoded text | 36.0 ms | 154.3 ms | 661.3 ms |
+| long | baseline | 39.9 ms | 585.1 ms | 2351.2 ms |
+| long | cache encoded text | 39.3 ms | 466.5 ms | 2217.6 ms |
+
+客户端中位数：
+
+| Text | Policy | PCM TTFB | Total |
+|---|---|---:|---:|
+| opening | baseline | 131.5 ms | 719.2 ms |
+| opening | cache encoded text | 133.0 ms | 678.3 ms |
+| long | baseline | 268.3 ms | 2366.8 ms |
+| long | cache encoded text | 262.3 ms | 2232.7 ms |
+
+收益来自预期阶段：long VITS 累计中位数改善 118.6 ms（约 20.3%），服务端和客户端 long total 都改善约 5.7%。逐轮配对中，VITS 为 7/7 更快，服务端和客户端 total 均为 6/7 更快；唯一回退轮次仍保持 VITS 更快，端到端差值来自 T2S/系统抖动。opening TTFB 中位数变化 `+1.5 ms`，未形成实质回退。
+
+正式默认 smoke 在请求体不提供缓存字段时记录 `vits_text_cache=true`；同一服务进程内显式 `false` 与默认 `true` 的 opening WAV SHA-256 均为 `8ce97e350680...f401b`，确认默认透传和回退路径都保持 bitwise 等价。

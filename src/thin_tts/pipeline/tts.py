@@ -768,6 +768,7 @@ class TTS:
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
         hybrid_switch_tokens = inputs.get("hybrid_switch_tokens", 0)
         hybrid_steady_tokens = inputs.get("hybrid_steady_tokens", 0)
+        cache_vits_encoded_text = bool(inputs.get("cache_vits_encoded_text", False))
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
         profile_timing = bool(os.environ.get("THIN_TTS_PROFILE")) or inputs.get("profile_timing", False)
         profile_request_id = inputs.get("profile_request_id") or str(time.time_ns())
@@ -1105,6 +1106,8 @@ class TTS:
                     overlap_len = overlap_length
                     overlap_size = math.ceil(overlap_length*upsample_rate)
                     cached_ge = None
+                    cached_encoded_text = None
+                    cached_text_mask = None
                     profile_chunk_idx = 0
                     sync_profile_cuda()
                     t2s_wait_start = time.perf_counter()
@@ -1151,7 +1154,14 @@ class TTS:
 
                         sync_profile_cuda()
                         vits_start = time.perf_counter()
-                        audio_chunk, latent, latent_mask, cached_ge = self.vits_model.decode_streaming(
+                        (
+                            audio_chunk,
+                            latent,
+                            latent_mask,
+                            cached_ge,
+                            encoded_text,
+                            text_mask,
+                        ) = self.vits_model.decode_streaming(
                                                 _semantic_tokens.unsqueeze(0),
                                                 phones, refer_audio_spec,
                                                 speed=speed_factor,
@@ -1161,8 +1171,13 @@ class TTS:
                                                 if last_latent is not None else None,
                                                 padding_length=token_padding_length,
                                                 cached_ge=cached_ge,
+                                                cached_encoded_text=cached_encoded_text,
+                                                cached_text_mask=cached_text_mask,
                                                 noise_generator=vits_generator,
                                             )
+                        if cache_vits_encoded_text:
+                            cached_encoded_text = encoded_text
+                            cached_text_mask = text_mask
                         sync_profile_cuda()
                         vits_ms = (time.perf_counter() - vits_start) * 1000
                         audio_chunk=audio_chunk.detach()[0, 0, :]
@@ -1218,6 +1233,7 @@ class TTS:
                             is_final=bool(is_final),
                             first_package=bool(is_first_package),
                             rng_isolation=rng_isolation,
+                            vits_text_cache=cache_vits_encoded_text,
                             semantic_sha256=semantic_sha256,
                         )
                         yield processed
