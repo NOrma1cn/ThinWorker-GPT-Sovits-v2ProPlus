@@ -1,4 +1,5 @@
 import gc
+import hashlib
 import json
 import math
 import os
@@ -81,6 +82,17 @@ def set_seed(seed: int):
     except:
         pass
     return seed
+
+
+def create_request_generators(seed: int, device, *, enabled: bool):
+    if not enabled:
+        return None, None
+    t2s_generator = torch.Generator(device=device)
+    vits_generator = torch.Generator(device=device)
+    t2s_generator.manual_seed(int(seed))
+    vits_seed = (int(seed) + 0x5DEECE66D) % (2**63 - 1)
+    vits_generator.manual_seed(vits_seed)
+    return t2s_generator, vits_generator
 
 
 class TTS_Config:
@@ -742,6 +754,12 @@ class TTS:
         seed = inputs.get("seed", -1)
         seed = -1 if seed in ["", None] else seed
         actual_seed = set_seed(seed)
+        rng_isolation = bool(inputs.get("rng_isolation", False))
+        t2s_generator, vits_generator = create_request_generators(
+            actual_seed,
+            self.configs.device,
+            enabled=rng_isolation,
+        )
         parallel_infer = inputs.get("parallel_infer", True)
         repetition_penalty = inputs.get("repetition_penalty", 1.35)
         streaming_mode = inputs.get("streaming_mode", False)
@@ -1068,6 +1086,7 @@ class TTS:
                         hybrid_switch_tokens=hybrid_switch_tokens,
                         profile_timing=profile_timing,
                         profile_request_id=profile_request_id,
+                        sampling_generator=t2s_generator,
                     )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
@@ -1138,6 +1157,7 @@ class TTS:
                                                 if last_latent is not None else None,
                                                 padding_length=token_padding_length,
                                                 cached_ge=cached_ge,
+                                                noise_generator=vits_generator,
                                             )
                         sync_profile_cuda()
                         vits_ms = (time.perf_counter() - vits_start) * 1000
@@ -1174,6 +1194,11 @@ class TTS:
                             )
                         post_ms = (time.perf_counter() - post_start) * 1000
                         chunk_elapsed_ms = (time.perf_counter() - t0) * 1000
+                        semantic_sha256 = None
+                        if profile_timing:
+                            semantic_sha256 = hashlib.sha256(
+                                _semantic_tokens.detach().cpu().contiguous().numpy().tobytes()
+                            ).hexdigest()
                         profile_event(
                             "thin_tts_profile_chunk",
                             item_index=item_index,
@@ -1188,6 +1213,8 @@ class TTS:
                             audio_samples=int(processed[1].shape[-1]) if hasattr(processed[1], "shape") else len(processed[1]),
                             is_final=bool(is_final),
                             first_package=bool(is_first_package),
+                            rng_isolation=rng_isolation,
+                            semantic_sha256=semantic_sha256,
                         )
                         yield processed
 

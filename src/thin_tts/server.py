@@ -57,6 +57,7 @@ class StreamRequest(BaseModel):
     min_chunk_length: Optional[int] = None
     hybrid_switch_tokens: Optional[int] = None
     profile_request_id: Optional[str] = None
+    rng_isolation: bool = False
 
 
 def _load_pipeline():
@@ -170,6 +171,7 @@ def _request_for(
     min_chunk_length: Optional[int] = None,
     hybrid_switch_tokens: Optional[int] = None,
     profile_request_id: Optional[str] = None,
+    rng_isolation: bool = False,
 ) -> dict:
     chunk_length = min_chunk_length if min_chunk_length is not None else 10
     # mode 4 = hybrid: early chunks use mode-2 mute-boundary detection for clean
@@ -206,6 +208,7 @@ def _request_for(
         "fragment_interval": 0.0,
         "seed": seed,
         "profile_request_id": profile_request_id,
+        "rng_isolation": rng_isolation,
     }
     return request
 
@@ -265,13 +268,14 @@ async def stream(req: StreamRequest):
     cfg = _config
     pipeline = _load_pipeline()
     request_dict = _request_for(
-        req.text,
-        cfg,
-        req.mode,
-        req.seed,
-        req.min_chunk_length,
-        req.hybrid_switch_tokens,
-        req.profile_request_id,
+        text=req.text,
+        cfg=cfg,
+        mode=req.mode,
+        seed=req.seed,
+        min_chunk_length=req.min_chunk_length,
+        hybrid_switch_tokens=req.hybrid_switch_tokens,
+        profile_request_id=req.profile_request_id,
+        rng_isolation=req.rng_isolation,
     )
 
     sample_rate = 32000

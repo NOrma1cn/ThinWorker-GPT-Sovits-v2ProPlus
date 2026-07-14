@@ -753,7 +753,13 @@ class Text2SemanticDecoder(nn.Module):
                 logits = logits[:, :-1] 
 
             samples = sample(
-                logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
+                logits,
+                y,
+                generator=kwargs.get("sampling_generator"),
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
             )[0]
 
             y = torch.concat([y, samples], dim=1)
@@ -1108,7 +1114,13 @@ class Text2SemanticDecoder(nn.Module):
             stage_start = time.perf_counter()
             with record_stage("t2s.sample"):
                 samples = sample(
-                    logits, y_buf[:, :y_len_total], top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
+                    logits,
+                    y_buf[:, :y_len_total],
+                    generator=kwargs.get("sampling_generator"),
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    temperature=temperature,
                 )[0]
             add_profile_stat(profile_chunk_stats, profile_total_stats, "sample_ms", stage_start)
 

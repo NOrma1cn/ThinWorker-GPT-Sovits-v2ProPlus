@@ -136,8 +136,9 @@ def topk_sampling(logits, top_k=10, top_p=1.0, temperature=1.0):
 
 def multinomial_sample_one_no_sync(
     probs_sort,
+    generator: Optional[torch.Generator] = None,
 ):  # Does multinomial sampling without a cuda synchronization
-    q = torch.empty_like(probs_sort).exponential_(1)
+    q = torch.empty_like(probs_sort).exponential_(1, generator=generator)
     return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
 
@@ -193,8 +194,9 @@ def logits_to_probs(
 def sample(
     logits,
     previous_tokens: Optional[torch.Tensor] = None,
+    generator: Optional[torch.Generator] = None,
     **sampling_kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     probs = logits_to_probs(logits=logits, previous_tokens=previous_tokens, **sampling_kwargs)
-    idx_next = multinomial_sample_one_no_sync(probs)
+    idx_next = multinomial_sample_one_no_sync(probs, generator=generator)
     return idx_next, probs

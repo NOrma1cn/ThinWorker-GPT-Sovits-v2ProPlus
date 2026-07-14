@@ -420,3 +420,41 @@ whole:  b91bac6a4b0c9301baab3591e7c5af32495ff5d1f66c56e66cb173e003b9921a
 - 新增测试，若代码再次调用 MLM wrapper 会立即失败。
 - 保持 tokenizer、模型加载类型、hidden layer 和 feature expansion 不变。
 - Stage 3 完整测试目标更新为 `35 passed, 1 skipped`。
+
+### 2026-07-14：V4-A Request-local RNG isolation
+
+状态：默认关闭的 POC 通过。不同 chunk 调度不再改变 T2S semantic token；音频仍会随 VITS chunk shape 和拼接变化，尚未通过主观质量门槛。
+
+根因验证：
+
+- 旧链路在请求开始时重置全局 CUDA RNG。
+- T2S `exponential_` sampling 与每次 VITS `randn_like` 交替消耗同一个 RNG stream。
+- T2S Python generator 每次 yield 后会先运行一个 VITS chunk，再恢复 semantic generation。
+- 因此 chunk 长度改变了恢复 T2S 时的 RNG state，调度策略实际也改变了模型生成内容。
+
+POC 实现：
+
+- 为同一 request seed 派生独立的 T2S 和 VITS `torch.Generator`。
+- T2S generator 只进入 semantic sampling。
+- VITS generator 只进入 streaming latent noise。
+- `rng_isolation=false` 为默认值，旧输出不变；当前只通过 API 显式开启实验。
+- profile 模式记录累计 semantic tensor 的 SHA-256，不在非 profile 请求中引入 GPU-to-CPU 同步。
+
+Linux 正式链路环境：Triton Full Graph captured、G2PW CUDA、DPO T2S/VITS、seed `314159`。测试文本为 98 个中文字符，固定长度 mode 3 分别使用 40 和 80 semantic-token chunk，每组重复两次。
+
+| RNG | Chunk | Repeat | Final tokens | Final semantic SHA-256 |
+|---|---:|---:|---:|---|
+| legacy global | 40 | 1/2 | 469 | `82d1c9f0543f...f6d7c53` |
+| legacy global | 80 | 1/2 | 440 | `198f3126da43...3524ee` |
+| isolated | 40 | 1 | 456 | `fca51b14d498...bf2499` |
+| isolated | 40 | 2 | 456 | `fca51b14d498...bf2499` |
+| isolated | 80 | 1 | 456 | `fca51b14d498...bf2499` |
+| isolated | 80 | 2 | 456 | `fca51b14d498...bf2499` |
+
+结论：旧 global RNG 下，40/80 并不是同一条 T2S 内容的调度对照；隔离后四次最终 semantic tensor bitwise identical，V4 后续的 `first/steady` 调度实验才具备可比性。
+
+隔离后的 PCM 仍不要求跨 chunk schedule 相同：chunk 40 和 80 的 VITS noise tensor shape、累计前缀 decode 和 SOLA 接缝不同。实测两者 WAV 长度相差 108 samples（约 3.4 ms），hash 也不同。这部分必须用边界指标和用户试听判断，不能用 semantic parity 替代。
+
+基准工具最初把立即发送的 44-byte WAV header 误记为音频 TTFB，已修正为累计响应超过 44 bytes 时才记录 `audio_ttfb_ms`。错误的 3-27 ms header 数据不进入结论。
+
+代码级回归：独立 generator、默认关闭、服务请求透传和全局 RNG 干扰测试通过；当前完整测试为 `40 passed, 1 skipped`。

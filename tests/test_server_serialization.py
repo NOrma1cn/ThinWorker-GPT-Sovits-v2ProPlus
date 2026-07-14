@@ -1,10 +1,11 @@
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from thin_tts.server import _stream_audio
+from thin_tts.server import _request_for, _stream_audio
 
 
 class RecordingPipeline:
@@ -58,3 +59,17 @@ def test_stream_releases_pipeline_lock_after_generator_error():
     # A subsequent stream can acquire the lock instead of deadlocking.
     chunks = list(_stream_audio(RecordingPipeline(), {}, 32000))
     assert len(chunks) == 2
+
+
+def test_request_can_opt_into_rng_isolation():
+    cfg = SimpleNamespace(ref_audio="reference.wav", ref_text="reference text")
+
+    request = _request_for(
+        "测试文本。",
+        cfg,
+        mode=4,
+        seed=314159,
+        rng_isolation=True,
+    )
+
+    assert request["rng_isolation"] is True

@@ -20,6 +20,21 @@ from thin_tts.text import symbols2 as symbols_v2
 from torch.cuda.amp import autocast
 import contextlib
 import random
+from typing import Optional
+
+
+def randn_like_with_generator(
+    value: torch.Tensor,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    if generator is None:
+        return torch.randn_like(value)
+    return torch.randn(
+        value.shape,
+        dtype=value.dtype,
+        device=value.device,
+        generator=generator,
+    )
 
 
 class StochasticDurationPredictor(nn.Module):
@@ -897,7 +912,7 @@ class SynthesizerTrn(nn.Module):
 
 
     @torch.no_grad()
-    def decode_streaming(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None, result_length:int=None, overlap_frames:torch.Tensor=None, padding_length:int=None, cached_ge=None):
+    def decode_streaming(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None, result_length:int=None, overlap_frames:torch.Tensor=None, padding_length:int=None, cached_ge=None, noise_generator: Optional[torch.Generator] = None):
         def get_ge(refer, sv_emb):
             ge = None
             if refer is not None:
@@ -943,7 +958,7 @@ class SynthesizerTrn(nn.Module):
             overlap_frames=overlap_frames, 
             padding_length=padding_length
             )
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
+        z_p = m_p + randn_like_with_generator(m_p, noise_generator) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
 
