@@ -644,3 +644,22 @@ POC 捕获 flow+decoder，回放计时包含静态输入 copy 和输出 clone；
 唯一可由调度策略预知的 exact shapes 是 first force-cut 的 100 和 steady force-cut 的 104。两图约占 252 MiB；100-frame graph 只节省约 3.17 ms，投影到完整 first VITS 低于 15% 门槛。当前 long 样本只有 3 个 104-frame chunk，累计理论收益约 8.3 ms，不到端到端总耗时的 1%。
 
 结论：exact graph 有局部效果，但“少量图、无 recapture storm、首包至少 15%”三个条件无法同时满足。除非未来调度器改为质量可接受的固定 shape，或 decoder 换成原生 chunk-aware/static-shape 结构，否则不推进当前 VITS CUDA Graph backend。
+
+### 2026-07-15：V7 Bounded semantic context
+
+状态：性能门槛失败，未进入主观推广门槛；实验 API 和实现均未保留。
+
+实验保持 mode 4 `50/50`、encoded-text cache、seed `314159` 和 request-local RNG，只将送入 VITS 的累计 semantic 左历史分别限制为 150/100/75 tokens（约 6/4/3 秒）。T2S 仍生成完整 456 tokens，所有策略 final semantic SHA-256 一致。
+
+3 次交替运行的 long 中位数：
+
+| Context | enc_p total | VITS total | Server last chunk | Client total |
+|---|---:|---:|---:|---:|
+| full | 123.5 ms | 369.1 ms | 1485.3 ms | 1502.9 ms |
+| 6 s / 150 | 118.2 ms | 363.6 ms | 1473.4 ms | 1481.7 ms |
+| 4 s / 100 | 121.1 ms | 366.6 ms | 1512.6 ms | 1544.1 ms |
+| 3 s / 75 | 124.8 ms | 369.1 ms | 1540.8 ms | 1548.8 ms |
+
+6 秒是唯一略快的策略，但只让 `enc_p` 改善 5.3 ms、VITS total 改善约 1.5%、服务端端到端改善约 0.8%；客户端约 1.4% 的变化仍在系统抖动量级。4 秒和 3 秒没有收益。
+
+opening 只有 131 semantic tokens，因此 6 秒策略没有发生截断，WAV 与 full bitwise equal；4/3 秒和所有 long bounded 策略都会改变音频。由于近似方案已经改变音频却没有稳定速度价值，不应再消耗主观质量预算。试听产物仍保留在 `eval_output/vits_context/index.html` 供复核，但不进入正式链路。

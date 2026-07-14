@@ -20,7 +20,7 @@
 **Goal**: Validate RNG isolation, `first=50 / steady=120`, cached VITS static conditioning, static-shape VITS execution, and bounded semantic context independently.
 **Success Criteria**: Each experiment has separate latency, PCM/spectral similarity, boundary metrics, and listening artifacts; only experiments passing their stated gates enter production.
 **Tests**: Opening/long benchmarks over multiple seeds, semantic-token hashes, boundary-jump checks, generated HTML listening set.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage 5: Voice Profile And Model-Family Benchmark
 **Goal**: Validate offline fixed-voice profiles and compare the optimized chain with at least one modern Chinese streaming TTS family.
