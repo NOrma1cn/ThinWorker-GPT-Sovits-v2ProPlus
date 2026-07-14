@@ -1295,7 +1295,8 @@ class TTS:
 
         audio = torch.cat(audio, dim=0)
         audio = audio.cpu().numpy()
-        audio = (audio * 32768).astype(np.int16)
+        # Multiplying +1.0 by 32768 wraps to -32768 when cast to int16.
+        audio = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
 
         return sr, audio
 
