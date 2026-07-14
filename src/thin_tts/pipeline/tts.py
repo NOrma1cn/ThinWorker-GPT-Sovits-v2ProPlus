@@ -1147,21 +1147,18 @@ class TTS:
                         if overlap_len>overlap_length:
                             audio_chunk=audio_chunk[-int((overlap_length+semantic_tokens.shape[-1])*upsample_rate):]
 
-                        audio_chunk_ = audio_chunk
-                        if is_first_chunk and not is_final:
-                            is_first_chunk = False
-                            if overlap_size > 0:
-                                audio_chunk_ = audio_chunk_[:-overlap_size]
-                        elif is_first_chunk and is_final:
-                            is_first_chunk = False
-                        elif not is_first_chunk and not is_final:
-                            if overlap_size > 0:
-                                # SOLA crossfade for smooth chunk transitions
-                                audio_chunk_ = self.sola_algorithm([last_audio_chunk, audio_chunk_], overlap_size)
-                                audio_chunk_ = (
-                                    audio_chunk_[last_audio_chunk.shape[0]-overlap_size:-overlap_size] if not is_final \
-                                        else audio_chunk_[last_audio_chunk.shape[0]-overlap_size:]
-                                        )
+                        audio_chunk_, is_first_chunk = self.splice_streaming_audio_chunk(
+                            audio_chunk=audio_chunk,
+                            last_audio_chunk=last_audio_chunk,
+                            overlap_size=overlap_size,
+                            fade_size=(
+                                min(overlap_size, max(1, math.ceil(output_sr * 0.001)))
+                                if is_final
+                                else overlap_size
+                            ),
+                            is_first_chunk=is_first_chunk,
+                            is_final=is_final,
+                        )
                         splice_ms = (time.perf_counter() - splice_start) * 1000
 
                         last_latent = latent
@@ -1302,12 +1299,40 @@ class TTS:
 
         return sr, audio
 
+    def splice_streaming_audio_chunk(
+        self,
+        audio_chunk: torch.Tensor,
+        last_audio_chunk: torch.Tensor | None,
+        overlap_size: int,
+        is_first_chunk: bool,
+        is_final: bool,
+        fade_size: int | None = None,
+    ):
+        """Crossfade a streaming chunk and return the audio that can be emitted."""
+        if is_first_chunk:
+            if not is_final and overlap_size > 0:
+                audio_chunk = audio_chunk[:-overlap_size]
+            return audio_chunk, False
+
+        if overlap_size <= 0:
+            return audio_chunk, False
+
+        audio_chunk = self.sola_algorithm(
+            [last_audio_chunk, audio_chunk],
+            overlap_size,
+            fade_size=fade_size,
+        )
+        start = last_audio_chunk.shape[0] - overlap_size
+        stop = None if is_final else -overlap_size
+        return audio_chunk[start:stop], False
+
     def sola_algorithm(
         self,
         audio_fragments: List[torch.Tensor],
         overlap_len: int,
         search_len:int= 320,
-        silence_threshold: float = 0.02
+        silence_threshold: float = 0.02,
+        fade_size: int | None = None,
     ):
         """SOLA overlap-add splice.
 
@@ -1320,6 +1345,8 @@ class TTS:
         skip it. silence_threshold=0.02 sits between the measured bad-seam rms
         (all < 0.015, the 0/0 region) and good-seam rms (starts ~0.03), covering
         edge cases at 0.0117/0.0148 without touching genuine low-energy voiced cuts.
+        ``fade_size`` may shorten the actual blend while preserving the full
+        overlap window for correlation and lag selection.
         """
         dtype = audio_fragments[0].dtype
 
@@ -1340,10 +1367,11 @@ class TTS:
             audio_fragments[i] = f1_
 
             f2_ = f2[idx:]
-            window = torch.hann_window((overlap_len) * 2, device=f1.device, dtype=f1.dtype)
-            f2_[: overlap_len] = (
-                window[: overlap_len] * f2_[: overlap_len]
-                + window[overlap_len :] * f1[-overlap_len :]
+            blend_size = overlap_len if fade_size is None else min(overlap_len, max(1, fade_size))
+            window = torch.hann_window(blend_size * 2, device=f1.device, dtype=f1.dtype)
+            f2_[:blend_size] = (
+                window[:blend_size] * f2_[:blend_size]
+                + window[blend_size:] * f1[-overlap_len:][:blend_size]
             )
 
             audio_fragments[i + 1] = f2_
