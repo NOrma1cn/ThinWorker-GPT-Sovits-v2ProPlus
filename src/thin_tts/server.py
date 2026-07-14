@@ -56,6 +56,7 @@ class StreamRequest(BaseModel):
     seed: int = 8110
     min_chunk_length: Optional[int] = None
     hybrid_switch_tokens: Optional[int] = None
+    hybrid_steady_tokens: Optional[int] = None
     profile_request_id: Optional[str] = None
     rng_isolation: bool = False
 
@@ -170,6 +171,7 @@ def _request_for(
     seed: int,
     min_chunk_length: Optional[int] = None,
     hybrid_switch_tokens: Optional[int] = None,
+    hybrid_steady_tokens: Optional[int] = None,
     profile_request_id: Optional[str] = None,
     rng_isolation: bool = False,
 ) -> dict:
@@ -205,6 +207,7 @@ def _request_for(
         "overlap_length": 2,
         "min_chunk_length": chunk_length,
         "hybrid_switch_tokens": hybrid_switch_tokens or 0,
+        "hybrid_steady_tokens": hybrid_steady_tokens or 0,
         "fragment_interval": 0.0,
         "seed": seed,
         "profile_request_id": profile_request_id,
@@ -274,6 +277,7 @@ async def stream(req: StreamRequest):
         seed=req.seed,
         min_chunk_length=req.min_chunk_length,
         hybrid_switch_tokens=req.hybrid_switch_tokens,
+        hybrid_steady_tokens=req.hybrid_steady_tokens,
         profile_request_id=req.profile_request_id,
         rng_isolation=req.rng_isolation,
     )

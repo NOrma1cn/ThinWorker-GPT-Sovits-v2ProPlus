@@ -458,3 +458,79 @@ Linux 正式链路环境：Triton Full Graph captured、G2PW CUDA、DPO T2S/VITS
 基准工具最初把立即发送的 44-byte WAV header 误记为音频 TTFB，已修正为累计响应超过 44 bytes 时才记录 `audio_ttfb_ms`。错误的 3-27 ms header 数据不进入结论。
 
 代码级回归：独立 generator、默认关闭、服务请求透传和全局 RNG 干扰测试通过；当前完整测试为 `40 passed, 1 skipped`。
+
+### 2026-07-14：V4-B Mute-boundary correctness and `50/120` scheduler
+
+状态：代码、客观指标和用户试听均通过。semantic lookahead 重复修复进入正式链路；`50/120` 保留为显式实验参数，但因 long 总收益未达门槛，不进入默认 mode 4。
+
+#### 先修复验证中发现的 semantic lookahead 重复
+
+旧 mute-boundary 分支在找到边界后：
+
+```text
+yield:    y_buf[curr_ptr:y_len_total]      # 包含边界后的 2-token lookahead
+advance:  curr_ptr += argmax_idx + 1       # 只推进到边界
+```
+
+因此边界后的 lookahead 已经发送给 VITS，却会在下一 chunk 再发送一次。修复前同一条原始 T2S 序列出现：
+
+| Policy | Raw T2S tokens | Pipeline accumulated tokens | Duplicated |
+|---|---:|---:|---:|
+| opening `50/50` | 131 | 133 | 2 |
+| long `50/50` | 456 | 468 | 12 |
+| long `50/120` | 456 | 465 | 9 |
+
+修复后只 yield 到 `argmax_idx + 1`，lookahead 留在 pending buffer。所有 12 个正式请求均满足 raw T2S tokens 等于 pipeline tokens；opening 为 131，long 为 456。该问题会改变音频，性质是现有边界正确性修复，而不是调度性能优化。
+
+#### Adaptive deadline
+
+新增显式 `hybrid_steady_tokens`：
+
+- 首 chunk 仍使用 `hybrid_switch_tokens=50`。
+- 后续 chunk 可显式设为 120。
+- 未设置或设为 0 时继续使用 50，现有 mode 4 默认行为不变。
+- profile event 记录每个 chunk 实际生效的 deadline。
+
+Linux/Triton、G2PW CUDA、seed `314159`、request-local RNG 下，预热后交替运行 `50/50` 和 `50/120`，opening/long 各 3 次。
+
+semantic 正确性：
+
+| Text | Policy | Pipeline tokens | Final semantic SHA-256 |
+|---|---|---:|---|
+| opening | `50/50` | 131 | `2c3e8e532b12...a577c3` |
+| opening | `50/120` | 131 | `2c3e8e532b12...a577c3` |
+| long | `50/50` | 456 | `fca51b14d498...bf2499` |
+| long | `50/120` | 456 | `fca51b14d498...bf2499` |
+
+实际 chunk 数：
+
+| Text | `50/50` | `50/120` |
+|---|---:|---:|
+| opening | 5 | 2 个非空 audio chunks（另有 final empty marker） |
+| long | 16 | 12 |
+
+服务端同步 profile 中位数：
+
+| Text | Policy | First chunk elapsed | VITS total | Last audio chunk elapsed |
+|---|---|---:|---:|---:|
+| opening | `50/50` | 87.4 ms | 136.3 ms | 450.4 ms |
+| opening | `50/120` | 84.5 ms | 65.5 ms | 382.2 ms |
+| long | `50/50` | 178.0 ms | 456.7 ms | 1638.3 ms |
+| long | `50/120` | 179.2 ms | 379.5 ms | 1607.8 ms |
+
+客户端中位数：
+
+| Text | Policy | PCM TTFB | Total | Audio duration |
+|---|---|---:|---:|---:|
+| opening | `50/50` | 95.3 ms | 462.2 ms | 5.2396 s |
+| opening | `50/120` | 94.6 ms | 396.3 ms | 5.2400 s |
+| long | `50/50` | 186.0 ms | 1647.2 ms | 18.2002 s |
+| long | `50/120` | 213.9 ms | 1621.3 ms | 18.2057 s |
+
+客户端 long TTFB 存在 Windows HTTP 抖动；服务端首 chunk profile 显示两策略实际为 `178.0 vs 179.2 ms`，符合“首 chunk 调度不变”。因此不能把客户端 `+27.9 ms` 解释为算法回退。
+
+收益结论：opening 的 VITS 调用数明显下降，总耗时改善约 15%；long VITS 累计改善约 17%，但 T2S 占主导，端到端只改善约 1.9%。这没有达到 V4 原定 long total 至少 10% 的 promotion 门槛。
+
+客观边界指标：两组都没有 clipping。adaptive 的最大单点跳变略高：opening `17096 -> 18864`，long `12578 -> 14368`；p99.9 jump 为 opening `9549 -> 8451`、long `7584 -> 7874`。这些统计不能代替试听，尤其要听更大的 steady chunk 是否带来接缝、重音或语气变化。
+
+用户试听结论：旧 `50/50`、修复重复后的 `50/50`、修复后的 `50/120`，opening 与 long 均未发现质量问题。由此接受 lookahead 正确性修复；adaptive 虽通过质量门槛，但仍因性能门槛失败而不默认启用。

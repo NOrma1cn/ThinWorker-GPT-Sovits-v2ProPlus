@@ -35,6 +35,29 @@ default_config = {
 }
 
 
+def hybrid_deadline_for_chunk(
+    first_tokens: int,
+    steady_tokens: int,
+    *,
+    chunk_index: int,
+) -> int:
+    if chunk_index > 0 and steady_tokens > 0:
+        return steady_tokens
+    return first_tokens
+
+
+def slice_semantic_boundary(
+    tokens: torch.Tensor,
+    *,
+    start: int,
+    boundary_tokens: int,
+):
+    if boundary_tokens <= 0:
+        raise ValueError("boundary_tokens must be greater than zero")
+    end = start + boundary_tokens
+    return tokens[:, start:end], end
+
+
 # @torch.jit.script ## 使用的话首次推理会非常慢，而且推理速度不稳定
 # Efficient implementation equivalent to the following:
 def scaled_dot_product_attention(
@@ -979,6 +1002,7 @@ class Text2SemanticDecoder(nn.Module):
         # count is force-cut at fixed length (mode-3 behaviour) instead of waiting
         # for a mute boundary. Only takes effect while mute_emb_sim_matrix is set.
         hybrid_switch_tokens = int(kwargs.get("hybrid_switch_tokens", 0) or 0)
+        hybrid_steady_tokens = int(kwargs.get("hybrid_steady_tokens", 0) or 0)
         MAX_SEQ_LEN = 1536
 
         x = self.ar_text_embedding(x)
@@ -1070,6 +1094,11 @@ class Text2SemanticDecoder(nn.Module):
 
         for idx in decode_iter:
             token_counter+=1
+            active_hybrid_deadline = hybrid_deadline_for_chunk(
+                hybrid_switch_tokens,
+                hybrid_steady_tokens,
+                chunk_index=profile_chunk_idx,
+            )
             profile_chunk_stats["tokens"] += 1
             profile_total_stats["tokens"] += 1
             if xy_attn_mask is not None:
@@ -1162,6 +1191,7 @@ class Text2SemanticDecoder(nn.Module):
                         curr_ptr=int(curr_ptr),
                         x_len=int(x_len),
                         prefix_len=int(prefix_len),
+                        hybrid_deadline=int(active_hybrid_deadline),
                         **rounded_stats(profile_chunk_stats),
                     )
                     torch_profile_toggle(False)
@@ -1170,7 +1200,7 @@ class Text2SemanticDecoder(nn.Module):
                 break
 
 
-            force_fixed = hybrid_switch_tokens > 0 and token_counter >= hybrid_switch_tokens
+            force_fixed = active_hybrid_deadline > 0 and token_counter >= active_hybrid_deadline
             if streaming_mode and (mute_emb_sim_matrix is not None) and (not force_fixed) and (token_counter >= chunk_length+check_token_num):
                 sync_profile_cuda()
                 stage_start = time.perf_counter()
@@ -1183,7 +1213,13 @@ class Text2SemanticDecoder(nn.Module):
                 if score[argmax_idx]>=0 and argmax_idx+1>=chunk_length:
                     print(f"\n\ncurr_ptr:{curr_ptr}")
                     add_profile_stat(profile_chunk_stats, profile_total_stats, "boundary_ms", stage_start)
-                    yield_tokens = int(y_len_total - curr_ptr)
+                    boundary_tokens = int(argmax_idx.item()) + 1
+                    semantic_chunk, next_ptr = slice_semantic_boundary(
+                        y_buf,
+                        start=curr_ptr,
+                        boundary_tokens=boundary_tokens,
+                    )
+                    yield_tokens = boundary_tokens
                     profile_event(
                         "thin_tts_profile_t2s_chunk",
                         chunk_index=profile_chunk_idx,
@@ -1194,13 +1230,14 @@ class Text2SemanticDecoder(nn.Module):
                         curr_ptr=int(curr_ptr),
                         x_len=int(x_len),
                         prefix_len=int(prefix_len),
+                        hybrid_deadline=int(active_hybrid_deadline),
                         **rounded_stats(profile_chunk_stats),
                     )
+                    token_counter -= boundary_tokens
+                    curr_ptr = next_ptr
                     torch_profile_toggle(False)
-                    yield y_buf[:, curr_ptr:y_len_total], False
+                    yield semantic_chunk, False
                     torch_profile_toggle(True)
-                    token_counter -= argmax_idx+1
-                    curr_ptr += argmax_idx+1
                     profile_chunk_idx += 1
                     profile_chunk_stats = new_profile_stats()
                 else:
@@ -1209,7 +1246,7 @@ class Text2SemanticDecoder(nn.Module):
 
             elif streaming_mode and ((mute_emb_sim_matrix is None) or force_fixed) and (token_counter >= chunk_length):
                 if force_fixed:
-                    print(f"[mode4] deadline hit at token_counter={token_counter} (hybrid_switch_tokens={hybrid_switch_tokens}), force fixed-length cut")
+                    print(f"[mode4] deadline hit at token_counter={token_counter} (active_deadline={active_hybrid_deadline}), force fixed-length cut")
                 sync_profile_cuda()
                 stage_start = time.perf_counter()
                 with record_stage("t2s.boundary_check"):
@@ -1225,6 +1262,7 @@ class Text2SemanticDecoder(nn.Module):
                     curr_ptr=int(curr_ptr),
                     x_len=int(x_len),
                     prefix_len=int(prefix_len),
+                    hybrid_deadline=int(active_hybrid_deadline),
                     **rounded_stats(profile_chunk_stats),
                 )
                 torch_profile_toggle(False)
