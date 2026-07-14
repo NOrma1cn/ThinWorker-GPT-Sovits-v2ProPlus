@@ -120,7 +120,7 @@ safe:    [32766, 32767, 32767, -32767]
 
 当前加载 `AutoModelForMaskedLM`，forward 后只读取倒数第三层 hidden state。Masked-LM prediction head 的 vocabulary logits 没有消费者。
 
-优先验证直接调用现有模型的 `base_model`，以避免 checkpoint 加载差异。成功门槛是 hidden state bitwise equal 或在当前 dtype 下数值完全等价，随后再测延迟。
+已验证直接调用同一模型实例的 `base_model`：FP16 hidden state 在 28、37、59 token 三种长度上均 bitwise equal，最大绝对误差为 0。正式链路因此跳过 MLM prediction head，checkpoint 加载方式和所取 hidden layer 不变。Windows 独立基准的相对收益约 0-3.5 ms，但绝对耗时受当前 GPU 状态影响较大，最终端到端收益需要在 Linux 正式链路复测。
 
 ## 6. 结构性性能问题
 
@@ -391,3 +391,32 @@ whole:  b91bac6a4b0c9301baab3591e7c5af32495ff5d1f66c56e66cb173e003b9921a
 - 新增快速路径和回退测试；完整测试为 `34 passed, 1 skipped`。
 
 首次未缓存的 fastText 下载已单独观察到约 125.2 MB 和约 22.3 秒等待；本次缓存后的首个 legacy split 为 468.335 ms，随后约 0.55-0.86 ms。纯中文快速路径为约 0.011-0.027 ms。主要收益是消除首次下载/加载，而不是承诺数毫秒级热态 TTFB 改善。
+
+### 2026-07-14：V3 RoBERTa base-model path
+
+状态：真实模型等价性通过，正式链路已切换为同一 `AutoModelForMaskedLM` 实例的 `base_model` forward。
+
+验证方法：
+
+1. 只加载一次 production Chinese RoBERTa-large。
+2. 同一 tokenizer、同一 FP16 权重、同一 CUDA 输入分别运行 MLM wrapper 和 `base_model`。
+3. 两条路径都取 `hidden_states[-3][0, 1:-1]`。
+4. 对 opening、medium、long 交替运行 50 次，避免固定先后顺序偏差。
+
+结果：
+
+| Case | Tokens | Hidden bitwise equal | Max abs diff | MLM wrapper | Base model | Median saved | Peak delta saved |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| opening | 28 | yes | 0 | 28.776 ms | 26.279 ms | 2.497 ms | 0.745 MiB |
+| medium | 37 | yes | 0 | 29.726 ms | 28.881 ms | 0.845 ms | 0.985 MiB |
+| long | 59 | yes | 0 | 24.991 ms | 21.476 ms | 3.515 ms | 1.571 MiB |
+
+另一次 20-repeat 预跑的绝对耗时约 9.7-10.4 ms，收益为 `-0.045 / 0.438 / 0.687 ms`。两轮都保持 exact parity，但绝对延迟差异说明 Windows 独立测试受 GPU 时钟或系统负载影响，不能把 0.8-3.5 ms 直接承诺为 Linux 端到端收益。
+
+正确性结论不依赖计时：wrapper 的 hidden state 来自同一个 base encoder，跳过的只有无消费者的 vocabulary logits。phone-level feature 仍使用相同的 `word2ph` 索引展开，因此 hidden tensor bitwise equal 会传递为最终 BERT feature bitwise equal。
+
+回归保护：
+
+- 新增测试，若代码再次调用 MLM wrapper 会立即失败。
+- 保持 tokenizer、模型加载类型、hidden layer 和 feature expansion 不变。
+- Stage 3 完整测试目标更新为 `35 passed, 1 skipped`。

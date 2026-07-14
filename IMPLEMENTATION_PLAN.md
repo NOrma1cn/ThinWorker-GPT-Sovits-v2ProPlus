@@ -14,13 +14,13 @@
 **Goal**: Bypass language detection for conservatively recognized Chinese-only input and remove unused MLM-head computation without changing normalized text, phones, G2PW output, or RoBERTa hidden features.
 **Success Criteria**: Golden frontend outputs are identical on representative Chinese, numeric, punctuation, polyphonic, and mixed-ASCII inputs; pure-Chinese startup no longer loads the language detector; stage latency decreases.
 **Tests**: Golden-output tests, model hidden-state parity test, cold/warm frontend benchmark.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage 4: Streaming Runtime Experiments
 **Goal**: Validate RNG isolation, `first=50 / steady=120`, cached VITS static conditioning, static-shape VITS execution, and bounded semantic context independently.
 **Success Criteria**: Each experiment has separate latency, PCM/spectral similarity, boundary metrics, and listening artifacts; only experiments passing their stated gates enter production.
 **Tests**: Opening/long benchmarks over multiple seeds, semantic-token hashes, boundary-jump checks, generated HTML listening set.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 5: Voice Profile And Model-Family Benchmark
 **Goal**: Validate offline fixed-voice profiles and compare the optimized chain with at least one modern Chinese streaming TTS family.

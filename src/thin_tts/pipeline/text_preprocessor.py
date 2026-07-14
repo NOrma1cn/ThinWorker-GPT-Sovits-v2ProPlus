@@ -187,7 +187,7 @@ class TextPreprocessor:
             inputs = self.tokenizer(text, return_tensors="pt")
             for i in inputs:
                 inputs[i] = inputs[i].to(self.device)
-            res = self.bert_model(**inputs, output_hidden_states=True)
+            res = self.bert_model.base_model(**inputs, output_hidden_states=True)
             res = torch.cat(res["hidden_states"][-3:-2], -1)[0, 1:-1]
         assert len(word2ph) == len(text)
         # Vectorized phone-level feature: one indexed gather instead of a python
