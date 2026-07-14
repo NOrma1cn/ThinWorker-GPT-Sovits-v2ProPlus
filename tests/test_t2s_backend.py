@@ -1,8 +1,10 @@
+import asyncio
+
 import pytest
 
 from thin_tts.backends import configure_t2s_backend
 from thin_tts.pipeline.tts import TTS_Config
-from thin_tts.server import _backend_status
+from thin_tts.server import _backend_status, health
 
 
 class FakeBackend:
@@ -109,6 +111,12 @@ def test_server_backend_status_handles_loaded_and_unloaded_pipeline():
     candidate = FakeBackend()
     pipeline = type("Pipeline", (), {"t2s_backend": candidate})()
     assert _backend_status(pipeline)["active"] == "triton"
+
+
+def test_health_exposes_g2pw_backend_status():
+    result = asyncio.run(health())
+
+    assert result["g2pw_backend"]["active"] == "unloaded"
 
 
 def test_environment_can_force_sdpa_without_probing_triton(monkeypatch):

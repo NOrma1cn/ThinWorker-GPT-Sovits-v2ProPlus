@@ -14,6 +14,8 @@ from opencc import OpenCC
 from pypinyin import Style, pinyin
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 
+from thin_tts.g2pw_backend import get_g2pw_backend
+
 from ..zh_normalization.char_convert import tranditional_to_simplified
 from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_input
 from .utils import load_config
@@ -340,18 +342,11 @@ class G2PWOnnxConverter(_G2PWBaseOnnxConverter):
             os.path.join(self.model_dir, "g2pw.onnx"),
         )
 
-        if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-            )
-        else:
-            self.session_g2pw = onnxruntime.InferenceSession(
-                onnx_path,
-                sess_options=sess_options,
-                providers=["CPUExecutionProvider"],
-            )
+        self.session_g2pw = get_g2pw_backend().create_session(
+            onnxruntime,
+            onnx_path,
+            sess_options,
+        )
 
     def _predict(self, model_input: Dict[str, Any]) -> Tuple[List[str], List[float]]:
         return predict(session=self.session_g2pw, onnx_input=model_input, labels=self.labels)

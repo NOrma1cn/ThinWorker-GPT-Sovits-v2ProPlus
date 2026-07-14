@@ -21,7 +21,7 @@ dependencies = [
     "pypinyin>=0.50",
     "jieba-fast>=0.4",
     "cn2an>=0.5",
-    "onnxruntime>=1.15",
+    "onnxruntime-gpu==1.23.2",
     "opencc>=1.1",
     "requests>=2.28",
     "einops>=0.6",
@@ -29,7 +29,6 @@ dependencies = [
     "split-lang>=2.0",
     "packaging>=23.0",
     "pydantic>=2.0",
-    "g2pw",
 ]
 
 [project.optional-dependencies]

@@ -5,6 +5,7 @@
 ## Unreleased
 
 - 修复流式合成最后一个音频 chunk 未经过 SOLA crossfade，导致尾部拼接出现爆音的问题。final chunk 使用完整 overlap 做 SOLA 对齐，但仅用 1 ms Hann 前沿完成实际混合，避免把上一块尾部的异常波形继续带入。opening 边界单点跳变从 `19592` 降至 `1376`（-93.0%），边界后 2 ms 最大跳变从 `10811` 降至 `4424`，未增加首包延迟。
+- 将 G2PW CUDA Provider 接入正式链路，支持 `auto | cpu | cuda`、可选显存上限、CUDA 初始化失败自动回退 CPU，并通过 `/health` 与结构化日志暴露实际 Provider。固定已验证的 `onnxruntime-gpu==1.23.2`，移除会传递安装 CPU ORT 的冗余外部 `g2pw` 依赖；CPU/CUDA 注音输出一致，热态 G2PW 约快 7 倍，Full Graph 首包实测从 `158.5/195.1 ms` 降至 `111.0/130.4 ms`，额外显存约 1.2 GB。
 
 ## v0.2.0 — 正式 Linux/Triton 后端
 

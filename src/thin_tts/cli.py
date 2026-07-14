@@ -24,6 +24,18 @@ def build_parser():
         default=None,
         help="T2S backend (default: auto; Linux CUDA may use Triton)",
     )
+    parser.add_argument(
+        "--g2pw-backend",
+        choices=["auto", "cpu", "cuda"],
+        default=None,
+        help="G2PW ONNX Runtime backend (default: auto)",
+    )
+    parser.add_argument(
+        "--g2pw-cuda-memory-limit-mb",
+        type=int,
+        default=None,
+        help="Optional ONNX Runtime CUDA memory limit in MiB",
+    )
 
     # Weight paths
     parser.add_argument("--t2s-weights", default=None, help="Path to T2S/GPT checkpoint (.ckpt)")

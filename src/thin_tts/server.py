@@ -16,6 +16,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from thin_tts.config import ServerConfig
+from thin_tts.g2pw_backend import (
+    configure_g2pw_backend,
+    cuda_device_id_from_device,
+    g2pw_backend_status,
+)
 
 PIPELINE = None
 _config: Optional[ServerConfig] = None
@@ -69,6 +74,12 @@ def _load_pipeline():
     # tqdm writes synchronously on every decode step. Keep production serving
     # quiet by default while allowing an explicit false value to opt back in.
     os.environ.setdefault("THIN_TTS_DISABLE_TQDM", "1")
+
+    configure_g2pw_backend(
+        requested=cfg.g2pw_backend,
+        cuda_device_id=cuda_device_id_from_device(cfg.device),
+        cuda_memory_limit_mb=cfg.g2pw_cuda_memory_limit_mb,
+    )
 
     import torch
     from thin_tts.pipeline.tts import TTS, TTS_Config
@@ -242,6 +253,7 @@ async def health():
         "loaded": PIPELINE is not None,
         "streaming": True,
         "t2s_backend": _backend_status(PIPELINE),
+        "g2pw_backend": g2pw_backend_status(),
     }
 
 
@@ -284,5 +296,6 @@ def run(cfg: ServerConfig):
         "host": cfg.host,
         "port": cfg.port,
         "t2s_backend": _backend_status(PIPELINE),
+        "g2pw_backend": g2pw_backend_status(),
     }), flush=True)
     uvicorn.run(app, host=cfg.host, port=cfg.port)

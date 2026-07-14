@@ -24,6 +24,8 @@ def _write_config(tmp_path: Path, *, half: bool = False) -> Path:
                     "device": "cpu",
                     "half": half,
                     "t2s_backend": "sdpa",
+                    "g2pw_backend": "cpu",
+                    "g2pw_cuda_memory_limit_mb": 1024,
                 },
                 "weights": weights,
             },
@@ -45,6 +47,8 @@ def test_omitted_cli_options_preserve_yaml_server_values(tmp_path):
     assert config.device == "cpu"
     assert config.half is False
     assert config.t2s_backend == "sdpa"
+    assert config.g2pw_backend == "cpu"
+    assert config.g2pw_cuda_memory_limit_mb == 1024
 
 
 def test_explicit_cli_options_override_yaml_server_values(tmp_path):
@@ -63,6 +67,10 @@ def test_explicit_cli_options_override_yaml_server_values(tmp_path):
             "--no-half",
             "--t2s-backend",
             "auto",
+            "--g2pw-backend",
+            "cuda",
+            "--g2pw-cuda-memory-limit-mb",
+            "1536",
         ]
     )
     config = ServerConfig.from_args(args)
@@ -72,3 +80,17 @@ def test_explicit_cli_options_override_yaml_server_values(tmp_path):
     assert config.device == "cuda"
     assert config.half is False
     assert config.t2s_backend == "auto"
+    assert config.g2pw_backend == "cuda"
+    assert config.g2pw_cuda_memory_limit_mb == 1536
+
+
+def test_environment_can_select_g2pw_backend(tmp_path, monkeypatch):
+    config_path = _write_config(tmp_path)
+    monkeypatch.setenv("THIN_TTS_G2PW_BACKEND", "auto")
+    monkeypatch.setenv("THIN_TTS_G2PW_CUDA_MEMORY_LIMIT_MB", "2048")
+
+    args = build_parser().parse_args(["--config", str(config_path)])
+    config = ServerConfig.from_args(args)
+
+    assert config.g2pw_backend == "auto"
+    assert config.g2pw_cuda_memory_limit_mb == 2048

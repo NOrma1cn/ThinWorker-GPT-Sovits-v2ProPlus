@@ -37,6 +37,38 @@ server:
 当前后端、捕获次数、Graph 显存及回退原因。当前 Triton 路径针对 batch=1、
 FP16、单 token AR decode；遇到不兼容形状会自动切回 SDPA。
 
+## G2PW 推理后端
+
+`g2pw_backend` 控制中文多音字模型使用的 ONNX Runtime Provider：
+
+- `auto`（默认）：优先 CUDA，CUDA Provider 缺失或初始化失败时自动回退 CPU。
+- `cpu`：始终使用 CPU，适合显存紧张或排查 CUDA 依赖问题。
+- `cuda`：优先 CUDA，并保留 CPU 自动回退以保证服务可用。
+
+项目固定使用已验证的 `onnxruntime-gpu==1.23.2`。该发行包同时包含 CPU
+Provider，因此不需要并装 `onnxruntime`；从旧环境升级时应先卸载 CPU 包，
+再安装当前项目，避免两个发行包覆盖同一个 Python 模块：
+
+```bash
+pip uninstall -y onnxruntime
+pip install .
+```
+
+可以在 YAML 的 `server` 段配置：
+
+```yaml
+server:
+  g2pw_backend: auto
+  # 可选；不设置时由 ONNX Runtime 管理显存
+  g2pw_cuda_memory_limit_mb: 1536
+```
+
+对应命令行参数为 `--g2pw-backend auto|cpu|cuda` 和
+`--g2pw-cuda-memory-limit-mb`；环境变量为 `THIN_TTS_G2PW_BACKEND` 和
+`THIN_TTS_G2PW_CUDA_MEMORY_LIMIT_MB`。CUDA G2PW 在 RTX 4080 Laptop 实测
+额外占用约 1.2 GB 显存，热态速度约为 CPU 的 7 倍。`/health` 的
+`g2pw_backend` 字段会报告请求模式、实际 Provider 和回退原因。
+
 ## 快速开始
 
 ### 1. 安装 PyTorch（CUDA 版）
@@ -125,7 +157,7 @@ INFO:     Uvicorn running on http://0.0.0.0:9881
 
 ```bash
 curl http://localhost:9881/health
-# {"status":"ok","loaded":true,"streaming":true}
+# {"status":"ok","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
 ```
 
 **流式合成：**
@@ -153,7 +185,7 @@ curl -X POST http://localhost:9881/stream \
 
 **响应示例：**
 ```json
-{"status": "ok", "loaded": true, "streaming": true}
+{"status":"ok","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
 ```
 
 ### POST /stream

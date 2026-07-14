@@ -15,6 +15,8 @@ class ServerConfig:
     device: str = "cuda"
     half: bool = True
     t2s_backend: str = "auto"
+    g2pw_backend: str = "auto"
+    g2pw_cuda_memory_limit_mb: Optional[int] = None
 
     # Weight paths
     t2s_weights: str = ""
@@ -59,6 +61,14 @@ class ServerConfig:
             half=server_value("half", True),
             t2s_backend=resolve(getattr(args, "t2s_backend", None), "THIN_TTS_T2S_BACKEND",
                                 server_cfg.get("t2s_backend", "auto"), "auto"),
+            g2pw_backend=resolve(getattr(args, "g2pw_backend", None), "THIN_TTS_G2PW_BACKEND",
+                                 server_cfg.get("g2pw_backend", "auto"), "auto"),
+            g2pw_cuda_memory_limit_mb=resolve(
+                getattr(args, "g2pw_cuda_memory_limit_mb", None),
+                "THIN_TTS_G2PW_CUDA_MEMORY_LIMIT_MB",
+                server_cfg.get("g2pw_cuda_memory_limit_mb"),
+                None,
+            ),
             t2s_weights=resolve(args.t2s_weights, "THIN_TTS_T2S_WEIGHTS",
                                 weights_cfg.get("t2s_weights")),
             vits_weights=resolve(args.vits_weights, "THIN_TTS_VITS_WEIGHTS",
@@ -88,6 +98,24 @@ class ServerConfig:
                 file=sys.stderr,
             )
             sys.exit(1)
+        self.g2pw_backend = str(self.g2pw_backend).strip().lower()
+        if self.g2pw_backend not in {"auto", "cpu", "cuda"}:
+            print(
+                f"[ERROR] Invalid g2pw_backend {self.g2pw_backend!r}; expected auto, cpu, or cuda",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if self.g2pw_cuda_memory_limit_mb not in (None, ""):
+            try:
+                self.g2pw_cuda_memory_limit_mb = int(self.g2pw_cuda_memory_limit_mb)
+            except (TypeError, ValueError):
+                print("[ERROR] g2pw_cuda_memory_limit_mb must be an integer", file=sys.stderr)
+                sys.exit(1)
+            if self.g2pw_cuda_memory_limit_mb <= 0:
+                print("[ERROR] g2pw_cuda_memory_limit_mb must be greater than zero", file=sys.stderr)
+                sys.exit(1)
+        else:
+            self.g2pw_cuda_memory_limit_mb = None
         required = {
             "t2s_weights": self.t2s_weights,
             "vits_weights": self.vits_weights,
