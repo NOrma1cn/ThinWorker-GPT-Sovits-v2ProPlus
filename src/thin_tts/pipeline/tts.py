@@ -1161,6 +1161,7 @@ class TTS:
                             cached_ge,
                             encoded_text,
                             text_mask,
+                            vits_stage_timings,
                         ) = self.vits_model.decode_streaming(
                                                 _semantic_tokens.unsqueeze(0),
                                                 phones, refer_audio_spec,
@@ -1174,6 +1175,7 @@ class TTS:
                                                 cached_encoded_text=cached_encoded_text,
                                                 cached_text_mask=cached_text_mask,
                                                 noise_generator=vits_generator,
+                                                profile_stages=profile_timing,
                                             )
                         if cache_vits_encoded_text:
                             cached_encoded_text = encoded_text
@@ -1235,6 +1237,7 @@ class TTS:
                             rng_isolation=rng_isolation,
                             vits_text_cache=cache_vits_encoded_text,
                             semantic_sha256=semantic_sha256,
+                            **vits_stage_timings,
                         )
                         yield processed
 

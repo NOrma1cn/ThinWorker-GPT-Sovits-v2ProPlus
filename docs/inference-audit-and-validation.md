@@ -600,3 +600,47 @@ sequence mask
 收益来自预期阶段：long VITS 累计中位数改善 118.6 ms（约 20.3%），服务端和客户端 long total 都改善约 5.7%。逐轮配对中，VITS 为 7/7 更快，服务端和客户端 total 均为 6/7 更快；唯一回退轮次仍保持 VITS 更快，端到端差值来自 T2S/系统抖动。opening TTFB 中位数变化 `+1.5 ms`，未形成实质回退。
 
 正式默认 smoke 在请求体不提供缓存字段时记录 `vits_text_cache=true`；同一服务进程内显式 `false` 与默认 `true` 的 opening WAV SHA-256 均为 `8ce97e350680...f401b`，确认默认透传和回退路径都保持 bitwise 等价。
+
+### 2026-07-15：V6 Static-shape VITS graph/buckets
+
+状态：当前方案拒绝。保留 profile-only 的 VITS CUDA Event 分段计时和独立 POC；不引入 graph backend。
+
+#### 正式缓存链路的 VITS 分布
+
+CUDA Event 只在 `THIN_TTS_PROFILE` 下创建，正常请求不增加 GPU event 或同步。正式 encoded-text cache 开启时，3 次重复的阶段累计中位数为：
+
+| Text | VITS total | conditioning | setup | RVQ | enc_p | noise | flow | decoder |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| opening | 134.2 ms | 1.6 | 0.6 | 1.4 | 49.5 | 0.5 | 30.2 | 50.9 |
+| long | 377.7 ms | 1.9 | 2.6 | 3.7 | 125.1 | 2.3 | 93.9 | 148.9 |
+
+long 中 `enc_p` 约占 33.1%，flow 约 24.9%，waveform decoder 约 39.4%；flow+decoder 合计约 64.3%，从占比上值得验证 graph。
+
+mode 4 的 opening/long 实际 tail latent frames 包含 `10, 22, 26, 28, 30, 36, 38, 44, 54, 70, 84, 86, 100, 104`。首 chunk 的 shape 由 mute boundary 决定，并不等于固定 deadline。
+
+#### 普通 padding bucket 不满足等价门槛
+
+将 representative latent 右侧补零到 `[32, 64, 96, 104]` 后再裁剪有效输出：
+
+- Flow 在部分 shape 上已经不 bitwise equal，观察到最大绝对差约 `0.0059`。
+- Waveform decoder 除原生 `104 -> 104` 外全部不等价，最大绝对差约 `0.1144`。
+- 多数 padded shape 从 sample 0 就发生差异，不局限于末尾 overlap 保护区。
+
+因此不能把 padding bucket 作为“严格等价的静态 shape”实现；它会变成新的近似质量实验，并可能影响整段音频，而非只影响接缝。
+
+#### Exact-shape CUDA Graph 上限
+
+POC 捕获 flow+decoder，回放计时包含静态输入 copy 和输出 clone；相同 shape 的输出均 bitwise equal：
+
+| Latent frames | Eager | Graph | Local improvement | Graph memory |
+|---:|---:|---:|---:|---:|
+| 22 | 12.04 ms | 4.13 ms | 65.7% | 未采信早期测量 |
+| 70 | 12.33 ms | 7.58 ms | 38.5% | 124 MiB |
+| 100 | 13.19 ms | 10.02 ms | 24.0% | 126 MiB |
+| 104 | 13.20 ms | 10.44 ms | 21.0% | 126 MiB |
+
+22/70 是当前两条测试文本的首 chunk shape，预先捕获时可使其 first VITS 达到 15% 门槛；但实际文本的 mute-boundary shape 事先未知，为这些 shape 预捕获会过拟合测试集。按需捕获会让第一次请求承担 capture 延迟，并随文本形成 recapture storm。
+
+唯一可由调度策略预知的 exact shapes 是 first force-cut 的 100 和 steady force-cut 的 104。两图约占 252 MiB；100-frame graph 只节省约 3.17 ms，投影到完整 first VITS 低于 15% 门槛。当前 long 样本只有 3 个 104-frame chunk，累计理论收益约 8.3 ms，不到端到端总耗时的 1%。
+
+结论：exact graph 有局部效果，但“少量图、无 recapture storm、首包至少 15%”三个条件无法同时满足。除非未来调度器改为质量可接受的固定 shape，或 decoder 换成原生 chunk-aware/static-shape 结构，否则不推进当前 VITS CUDA Graph backend。

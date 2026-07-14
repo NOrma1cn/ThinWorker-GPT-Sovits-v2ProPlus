@@ -973,7 +973,19 @@ class SynthesizerTrn(nn.Module):
         cached_encoded_text=None,
         cached_text_mask=None,
         noise_generator: Optional[torch.Generator] = None,
+        profile_stages: bool = False,
     ):
+        stage_events = []
+
+        def mark_stage(name):
+            if not profile_stages or not codes.is_cuda:
+                return
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            stage_events.append((name, event))
+
+        mark_stage("start")
+
         def get_ge(refer, sv_emb):
             ge = None
             if refer is not None:
@@ -999,15 +1011,18 @@ class SynthesizerTrn(nn.Module):
             ge = torch.stack(ges, 0).mean(0)
         else:
             ge = get_ge(refer, sv_emb)
+        mark_stage("conditioning")
 
         y_lengths = torch.LongTensor([codes.size(2) * 2]).to(codes.device)
         text_lengths = torch.LongTensor([text.size(-1)]).to(text.device)
+        mark_stage("setup")
 
         quantized = self.quantizer.decode(codes)
         if self.semantic_frame_rate == "25hz":
             quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
             result_length = (2*result_length) if result_length is not None else None
             padding_length = (2*padding_length) if padding_length is not None else None
+        mark_stage("rvq")
         (
             x,
             m_p,
@@ -1031,12 +1046,22 @@ class SynthesizerTrn(nn.Module):
             cached_text_mask=cached_text_mask,
             return_text_conditioning=True,
             )
+        mark_stage("enc_p")
         z_p = m_p + randn_like_with_generator(m_p, noise_generator) * torch.exp(logs_p) * noise_scale
+        mark_stage("noise")
 
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
+        mark_stage("flow")
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
-        return o, y_, y_mask_, ge, encoded_text, text_mask
+        mark_stage("decoder")
+
+        stage_timings = {}
+        if stage_events:
+            torch.cuda.synchronize(codes.device)
+            for (_, start), (name, end) in zip(stage_events, stage_events[1:]):
+                stage_timings[f"vits_{name}_ms"] = round(start.elapsed_time(end), 3)
+        return o, y_, y_mask_, ge, encoded_text, text_mask, stage_timings
 
     def extract_latent(self, x):
         ssl = self.ssl_proj(x)
