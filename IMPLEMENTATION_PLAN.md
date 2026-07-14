@@ -11,8 +11,8 @@
 **Status**: Complete
 
 ## Stage 3: Exact-Equivalence Frontend Cleanup
-**Goal**: Remove Chinese-only language detection and unused MLM-head computation without changing normalized text, phones, G2PW output, or RoBERTa hidden features.
-**Success Criteria**: Golden frontend outputs are identical on representative Chinese, numeric, punctuation, polyphonic, and mixed-ASCII inputs; startup dependencies and stage latency decrease.
+**Goal**: Bypass language detection for conservatively recognized Chinese-only input and remove unused MLM-head computation without changing normalized text, phones, G2PW output, or RoBERTa hidden features.
+**Success Criteria**: Golden frontend outputs are identical on representative Chinese, numeric, punctuation, polyphonic, and mixed-ASCII inputs; pure-Chinese startup no longer loads the language detector; stage latency decreases.
 **Tests**: Golden-output tests, model hidden-state parity test, cold/warm frontend benchmark.
 **Status**: In Progress
 

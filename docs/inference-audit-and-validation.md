@@ -9,7 +9,7 @@
 项目不应立即停止。当前链路的热态首包已经很接近这一代 GPT-SoVITS 架构在 RTX 40 系显卡上的实用上限，但仍存在：
 
 1. 一个能够确定复现的 PCM16 正峰值溢出问题，可能制造单样本爆音。
-2. 一个中文-only 路径中完全无效的语言识别阶段。
+2. 一个纯中文路径中可严格绕过、但混合 ASCII 时仍会改变 BERT 上下文边界的语言识别阶段。
 3. 一个只取 hidden state 却仍计算 MLM logits 的 RoBERTa 冗余输出头。
 4. 多个可以严格缓存的固定音色与 VITS 静态条件。
 5. 一个随长文本累积的 VITS 语义前缀重复编码问题。
@@ -57,7 +57,7 @@ Reference WAV
 | CN-HuBERT base | 约 95M / 180 MB | 固定参考音频到 prompt semantic | 编译 voice profile 后可卸载 |
 | ERes2NetV2 | 53.6M / 103 MB | 固定参考音频到 speaker embedding | 编译 voice profile 后可卸载 |
 | G2PW ONNX | 606 MB | 中文多音字消歧 | 保留 CUDA Provider；长期可与 RoBERTa 共享编码器 |
-| fast_langdetect | 首次下载约 125 MB | 语言检测 | 中文-only 路径中删除 |
+| fast_langdetect | 首次下载约 125 MB | 混合文本分段 | 纯中文输入绕过；混合 ASCII 保留兼容回退 |
 
 SoVITS 当前配置为 25 Hz、1024-entry 单层 RVQ、32 kHz 输出，upsample rates 为 `[10, 8, 2, 2, 2]`。推理仍使用 `noise_scale=0.5` 的 Gaussian latent noise。
 
@@ -108,11 +108,13 @@ safe:    [32766, 32767, 32767, -32767]
 
 这会把正满幅样本翻转成负满幅样本，能够制造单样本的大幅跳变。正确策略是先 clamp 到 `[-1, 1]`，再乘 `32767`。
 
-### 5.2 中文-only 语言识别无效
+### 5.2 纯中文语言识别可绕过，混合 ASCII 不能直接删除
 
-`TextPreprocessor` 调用 `LangSegmenter.getTexts(text, "zh")`。`LangSegmenter` 仍先运行 `split_by_lang`，但因为设置了 `default_lang="zh"`，所有识别结果之后都会被覆盖为 `zh`。
+`TextPreprocessor` 调用 `LangSegmenter.getTexts(text, "zh")`。纯中文、数字和标点输入最终形成一个 `zh` 段，因此 `split-lang / fast_langdetect` 在这条主路径上没有改变任何下游输入。
 
-因此 fast_langdetect 不影响最终 language tag，只增加启动下载、依赖和热路径工作。删除时需要用 golden corpus 验证中文、数字、标点、ASCII 混输的 normalized text、phones 与 BERT feature 完全一致。
+但 `full_en` 分支早于 `default_lang="zh"` 覆盖执行，混合 ASCII 会保留英文段边界。虽然 `clean_text_inf(..., "zh")` 和 `get_bert_inf(..., "zh")` 都忽略检测出的 language tag，分段边界仍会让 RoBERTa 分别编码多个中文片段。实测强制整句处理会保持 normalized text、G2PW 拼音、phones 和 word2ph 不变，却改变最终 phone-level BERT feature。
+
+因此正式方案是：对当前 normalizer 明确支持的基本汉字、ASCII 数字、空白、标点以及 `￥/^` 直接返回一个 `zh` 段；ASCII 字母、日文、emoji、扩展汉字等全部按需加载旧分段器回退。当前不能从安装依赖中彻底删除 `fast-langdetect/split-lang`。
 
 ### 5.3 RoBERTa MLM 输出头无消费者
 
@@ -176,7 +178,7 @@ profile 验证成功后可以卸载 CN-HuBERT 和 ERes2Net。该优化主要降�
 | 阶段 | 决策 | 无训练动作 | 需要训练的替代 |
 |---|---|---|---|
 | 中文 TN | 保留 | 扩充领域 golden corpus | WeTextProcessing/NeMo WFST |
-| fast_langdetect | 删除 | 中文-only 直接处理全文 | 不适用 |
+| fast_langdetect | 条件绕过 | 纯中文直接处理全文，混合文本兼容回退 | 不适用 |
 | G2PW | 保留 | CUDA、confidence 暴露、领域词典 | 与文本 encoder 共享 backbone |
 | RoBERTa-large | 优化 | 跳过 MLM head | 蒸馏或 shared dual-head encoder |
 | CN-HuBERT/ERes2Net | 离线化 | voice profile 后卸载 | 新 speaker/style encoder |
@@ -226,9 +228,10 @@ ZipVoice 使用 compact Zipformer 和 flow distillation，支持中文/英文。
 1. 建立 golden corpus：数字、日期、金额、量词、多音字、儿化、标点、ASCII 混输。
 2. 记录 normalized text、pinyin、phones、word2ph。
 3. 绕过 LangSegmenter 后逐项比对。
-4. 移除 fast-langdetect/split-lang/cn2an，并测冷启动、包体和热态 frontend。
+4. 混合 ASCII 单独验证整句处理是否改变 BERT 上下文。
+5. 仅在完整等价时删除依赖；否则保留按需加载的兼容回退。
 
-成功门槛：golden 输出完全一致；首次下载不再包含语言模型；热态无退化。
+成功门槛：正式路径 golden 输出完全一致；纯中文首次请求不加载语言模型；热态无退化。
 
 ### V3 RoBERTa base-model path
 
@@ -324,3 +327,67 @@ ZipVoice 使用 compact Zipformer 和 flow distillation，支持中文/英文。
 - 完整测试为 `32 passed, 1 skipped`。
 - SOLA、T2S backend、G2PW backend 和 server serialization 现有测试无回归。
 - WSL2 当前处于 stopped 状态，因此本阶段没有为试听而临时启动模型或修改配置。
+
+### 2026-07-14：V2 Chinese-only frontend parity
+
+状态：保守纯中文快速路径通过代码级和真实模型验证；完整删除语言分段器被否决。
+
+验证环境：Windows Python 3.11、RTX 4080 Laptop、FP16 Chinese RoBERTa-large、G2PW CPU Provider。此环境只用于等价性验证，耗时不能与 Linux Triton 正式链路直接比较。
+
+golden corpus 覆盖：
+
+- 普通中文。
+- 日期、整数、小数、百分比和金额。
+- `重新量一遍` 等量词与多音字。
+- 标点、儿化。
+- `AI模型GPT-SoVITS v2ProPlus发布。` 混合 ASCII。
+
+真实模型结果：
+
+| Case | Legacy segments | Active = legacy | Whole text = legacy | Active segmentation |
+|---|---:|---:|---:|---:|
+| plain | 1 | yes | yes | 0.026 ms |
+| date | 1 | yes | yes | 0.013 ms |
+| numbers | 1 | yes | yes | 0.027 ms |
+| amount | 1 | yes | yes | 0.023 ms |
+| quantifier | 1 | yes | yes | 0.012 ms |
+| polyphones | 1 | yes | yes | 0.011 ms |
+| punctuation | 1 | yes | yes | 0.021 ms |
+| erhua | 1 | yes | yes | 0.011 ms |
+| mixed_ascii | 6 | yes | **no** | 0.650 ms（legacy fallback） |
+
+每个 `yes` 都同时要求 normalized text、G2PW 拼音、phones、phone IDs、word2ph、BERT shape、BERT tensor 和 SHA-256 完全一致。
+
+混合 ASCII 的旧分段为：
+
+```text
+AI | 模型 | GPT-SoVITS v | 2 | ProPlus | 发布。
+en   zh     en             zh  en        zh
+```
+
+强制整句处理后，两条路径均得到：
+
+```text
+normalized: 模型减二秒发布.
+pinyin:     mo2 xing2 jian3 er4 miao3 fa1 bu4 .
+phones:     m o2 x ing2 j ian3 EE er4 m iao3 f a1 b u4 .
+word2ph:    2,2,2,2,2,2,2,1
+```
+
+但 phone-level BERT SHA-256 分别为：
+
+```text
+legacy: c025551f3319cbe73c38b9daa9708e791aa32272fb55765ef73d73e6954c6677
+whole:  b91bac6a4b0c9301baab3591e7c5af32495ff5d1f66c56e66cb173e003b9921a
+```
+
+这证明语言标签本身虽无消费者，分段边界仍是有效模型输入，不能全局删除。
+
+正式改动：
+
+- 纯中文输入直接形成单个 `zh` 段。
+- `LangSegmenter` 改为回退时按需导入，纯中文启动不再触发 language detector。
+- ASCII、日文、emoji、扩展汉字等保留旧行为。
+- 新增快速路径和回退测试；完整测试为 `34 passed, 1 skipped`。
+
+首次未缓存的 fastText 下载已单独观察到约 125.2 MB 和约 22.3 秒等待；本次缓存后的首个 legacy split 为 468.335 ms，随后约 0.55-0.86 ms。纯中文快速路径为约 0.011-0.027 ms。主要收益是消除首次下载/加载，而不是承诺数毫秒级热态 TTFB 改善。

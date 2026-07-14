@@ -1,12 +1,12 @@
 import os
 import sys
 import threading
+import unicodedata
 
 from tqdm import tqdm
 
 import re
 import torch
-from thin_tts.text.LangSegmenter import LangSegmenter
 from typing import Dict, List, Tuple
 from thin_tts.text.cleaner import clean_text
 from thin_tts.text import cleaned_text_to_sequence
@@ -19,6 +19,34 @@ language = os.environ.get("language", "Auto")
 language = sys.argv[-1] if sys.argv[-1] in scan_language_list() else language
 i18n = I18nAuto(language=language)
 punctuation = set(["!", "?", "…", ",", ".", "-"])
+
+
+def _is_cjk_ideograph(char: str) -> bool:
+    codepoint = ord(char)
+    return 0x4E00 <= codepoint <= 0x9FA5
+
+
+def _can_skip_language_detection(text: str) -> bool:
+    for char in text:
+        if _is_cjk_ideograph(char) or "0" <= char <= "9" or char.isspace():
+            continue
+        if unicodedata.category(char).startswith("P") or char in {"￥", "^"}:
+            continue
+        return False
+    return True
+
+
+def _legacy_language_segments(text: str) -> List[Dict[str, str]]:
+    from thin_tts.text.LangSegmenter import LangSegmenter
+
+    return LangSegmenter.getTexts(text, "zh")
+
+
+def segment_text_for_chinese_frontend(text: str) -> List[Dict[str, str]]:
+    """Skip language detection only for inputs handled entirely as Chinese."""
+    if _can_skip_language_detection(text):
+        return [{"lang": "zh", "text": text}]
+    return _legacy_language_segments(text)
 
 
 def expand_word_features(word_features: torch.Tensor, word2ph: list) -> torch.Tensor:
@@ -130,8 +158,7 @@ class TextPreprocessor:
             text = re.sub(r' {2,}', ' ', text)
             textlist = []
             langlist = []
-            # Chinese-only: treat all language hints as zh
-            for tmp in LangSegmenter.getTexts(text, "zh"):
+            for tmp in segment_text_for_chinese_frontend(text):
                 langlist.append(tmp["lang"])
                 textlist.append(tmp["text"])
             # print(textlist)
