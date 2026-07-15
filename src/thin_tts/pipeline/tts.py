@@ -40,6 +40,7 @@ from thin_tts.pipeline.text_preprocessor import TextPreprocessor
 from thin_tts.models.sv import SV
 from thin_tts.backends import configure_t2s_backend
 from thin_tts.voice_profile import REQUIRED_CACHE_KEYS
+from thin_tts.streaming_scheduler import BufferAwareDeadlineScheduler
 
 resample_transform_dict = {}
 
@@ -838,6 +839,7 @@ class TTS:
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
         hybrid_switch_tokens = inputs.get("hybrid_switch_tokens", 0)
         hybrid_steady_tokens = inputs.get("hybrid_steady_tokens", 0)
+        hybrid_buffer_target_ms = int(inputs.get("hybrid_buffer_target_ms", 0) or 0)
         cache_vits_encoded_text = bool(inputs.get("cache_vits_encoded_text", False))
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
         profile_timing = bool(os.environ.get("THIN_TTS_PROFILE")) or inputs.get("profile_timing", False)
@@ -1007,6 +1009,7 @@ class TTS:
             min_chunk_length=min_chunk_length,
             hybrid_switch_tokens=hybrid_switch_tokens,
             hybrid_steady_tokens=hybrid_steady_tokens,
+            hybrid_buffer_target_ms=hybrid_buffer_target_ms,
         )
         try:
             print("############ 推理 ############")
@@ -1016,6 +1019,12 @@ class TTS:
             audio = []
             is_first_package = True
             output_sr = self.configs.sampling_rate
+            buffer_deadline_scheduler = None
+            if hybrid_switch_tokens > 0 and hybrid_buffer_target_ms > 0:
+                buffer_deadline_scheduler = BufferAwareDeadlineScheduler(
+                    low_buffer_tokens=int(hybrid_switch_tokens),
+                    target_buffer_ms=hybrid_buffer_target_ms,
+                )
             for item_index, item in enumerate(data):
                 t3 = time.perf_counter()
                 batch_start = t3
@@ -1142,6 +1151,12 @@ class TTS:
                     #     item.to(dtype=self.precision, device=self.configs.device)
                     #     for item in self.prompt_cache["refer_spec"]
                     # ]
+                    hybrid_deadline_provider = None
+                    if buffer_deadline_scheduler is not None:
+                        def hybrid_deadline_provider(chunk_index, item_index=item_index):
+                            return buffer_deadline_scheduler.deadline_tokens(
+                                chunk_key=(item_index, chunk_index)
+                            )
                     semantic_token_generator =self.t2s_model.model.infer_panel(
                         all_phoneme_ids[0].unsqueeze(0),
                         all_phoneme_lens,
@@ -1159,6 +1174,7 @@ class TTS:
                         chunk_split_thershold=chunk_split_thershold,
                         hybrid_switch_tokens=hybrid_switch_tokens,
                         hybrid_steady_tokens=hybrid_steady_tokens,
+                        hybrid_deadline_provider=hybrid_deadline_provider,
                         profile_timing=profile_timing,
                         profile_request_id=profile_request_id,
                         sampling_generator=t2s_generator,
@@ -1284,6 +1300,16 @@ class TTS:
                                 0.0,
                             )
                         post_ms = (time.perf_counter() - post_start) * 1000
+                        processed_samples = (
+                            int(processed[1].shape[-1])
+                            if hasattr(processed[1], "shape")
+                            else len(processed[1])
+                        )
+                        if buffer_deadline_scheduler is not None:
+                            buffer_deadline_scheduler.record_audio(
+                                samples=processed_samples,
+                                sample_rate=output_sr,
+                            )
                         chunk_elapsed_ms = (time.perf_counter() - t0) * 1000
                         semantic_sha256 = None
                         if profile_timing:
@@ -1301,12 +1327,17 @@ class TTS:
                             elapsed_ms=round(chunk_elapsed_ms, 1),
                             new_tokens=int(semantic_tokens.shape[-1]),
                             total_tokens=int(_semantic_tokens.shape[-1]),
-                            audio_samples=int(processed[1].shape[-1]) if hasattr(processed[1], "shape") else len(processed[1]),
+                            audio_samples=processed_samples,
                             is_final=bool(is_final),
                             first_package=bool(is_first_package),
                             rng_isolation=rng_isolation,
                             vits_text_cache=cache_vits_encoded_text,
                             semantic_sha256=semantic_sha256,
+                            buffer_ahead_ms=(
+                                buffer_deadline_scheduler.buffer_ahead_ms()
+                                if buffer_deadline_scheduler is not None
+                                else None
+                            ),
                             **vits_stage_timings,
                         )
                         yield processed

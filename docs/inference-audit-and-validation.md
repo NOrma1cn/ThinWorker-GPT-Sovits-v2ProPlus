@@ -689,3 +689,27 @@ metadata 包含 T2S/VITS/BERT/HuBERT/SV artifact signature、reference audio SHA
 可用显存增加约 252 MiB；卸载前后均为 167,667 PCM samples，SHA-256 同为 `f4a5c121172c...e7d5`，bitwise equal。
 
 正式两次独立启动验证：第一次 health 为 `compiled`、保存文件 1,084,893 bytes、encoder 已卸载；第二次为 `loaded`，初始化日志不再出现 CN-HuBERT/SV 加载。loaded 服务 warm opening 的 WAV SHA-256 为稳定基线 `8ce97e350680...f401b`，TTFB 约 122 ms。跨进程第一个未覆盖 shape 仍存在此前已观察到的 CUDA cold-shape 数值差异，不由 voice profile 引入；warm 后 profile/no-profile 与回退路径一致。
+
+### 2026-07-15：V9 Buffer-aware Mode 4
+
+状态：客观门槛与用户试听均通过，进入 Mode 4 默认链路。显式 `hybrid_steady_tokens=0/120` 继续提供旧 `50/50`、`50/120` 回退。
+
+旧 Mode 4 对每个 semantic chunk 重复使用 50-token deadline。long 虽有充足的待播放音频，仍被拆成 16 块并执行 15 次 VITS/SOLA handoff；用户指出后半段稳定性较差。新策略保留首块 50-token 上限，之后根据服务端已输出音频时长减去首包后的墙钟耗时估算播放缓冲：低于 500 ms 时启用 50-token 上限，充足时只等待自然静音边界。
+
+最初的逐 token 动态版本会在 GPU 偶发变慢时于同一 semantic chunk 中途改变 deadline，一轮 long 在 195 token 被截断，形成非确定的 5 块输出。因此正式实现只在每个 semantic chunk 开始时采样一次水位，并在块内冻结决定；下一块开始时再评估，兼顾确定切块与低水位保护。
+
+Triton、G2PW CUDA、fixed-voice profile、seed `314159`、request-local RNG 和 profiling 下，旧 `50/50` 与 buffer 500 ms 交替各运行 7 次：
+
+| Text | Legacy chunks | Buffer chunks | Legacy forced | Buffer forced | Minimum predicted margin |
+|---|---:|---:|---:|---:|---:|
+| short | 2 | 2 | 0 | 0 | 542.4 ms |
+| medium | 5 | 3 | 2 | 1 | 132.5 ms |
+| long | 16 | 3 | 3 | 0 | 497.9 ms |
+
+| Text | Legacy TTFB | Buffer TTFB | Legacy total | Buffer total |
+|---|---:|---:|---:|---:|
+| short | 127.2 ms | 134.2 ms | 217.0 ms | 229.2 ms |
+| medium | 135.6 ms | 131.4 ms | 570.7 ms | 520.9 ms |
+| long | 229.7 ms | 246.4 ms | 1870.0 ms | 1648.0 ms |
+
+两组每个文本的首块 token 数和首块 semantic SHA-256 相同，最终 semantic token 数/hash 也相同。long buffer 路径的跨运行 PCM 差异为 CUDA 大 shape 数值噪声：相关系数约 `0.9999998`、最大 93/32768，不是语义或切块漂移。用户试听确认没有首包后停顿或新增质量问题，并观察到后半段失真减少、声音更干净。

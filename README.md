@@ -215,6 +215,9 @@ curl -X POST http://localhost:9881/stream \
 | `top_p` | float | 否 | 1.0 | AR 采样 top_p |
 | `temperature` | float | 否 | 1.0 | AR 采样温度 |
 | `fragment_interval` | float | 否 | 0.3 | 分句间隔（秒） |
+| `hybrid_switch_tokens` | int | 否 | 50 | Mode 4 首块及低缓冲时的 semantic token 上限 |
+| `hybrid_buffer_target_ms` | int | 否 | 500 | Mode 4 预测播放缓冲水位；`0` 关闭动态水位 |
+| `hybrid_steady_tokens` | int | 否 | — | 显式固定后续上限；提供该字段时保留旧的固定 deadline 策略 |
 
 **响应：** `Content-Type: audio/wav`，流式返回 PCM16 WAV 数据。
 

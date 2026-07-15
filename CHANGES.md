@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- Mode 4 默认改为 500 ms 播放缓冲水位调度：首块及低水位时保留 50-token 上限，缓冲充足后等待自然静音边界；deadline 在每个 semantic chunk 内冻结，避免 GPU 墙钟抖动改变切块。显式 `50/50`、`50/120` 仍可回退。long 从 16 块降至稳定 3 块、强制接缝从 3 降至 0，总耗时中位数 `1870.0 → 1648.0 ms`，最小预测缓冲余量 497.9 ms；用户试听确认后半段更稳定、失真更少且更干净。
 - 新增显式 fixed-voice profile：首次 warmup 原子编译约 1 MiB 的 prompt semantic/reference/SV/prompt frontend cache，后续启动在模型初始化前验证 schema、模型/参考音频/参考文本 fingerprint，命中时跳过 CN-HuBERT 与 ERes2Net。实测释放约 252 MiB 可用显存，卸载前后 PCM bitwise equal；状态通过 `/health` 暴露。
 - VITS 流式链路默认缓存固定 phones 的 `text_embedding + encoder_text` 输出，并保留请求级回退。long VITS 累计中位数改善约 20.3%，端到端改善约 5.7%，PCM bitwise equal。
 - 修复流式合成最后一个音频 chunk 未经过 SOLA crossfade，导致尾部拼接出现爆音的问题。final chunk 使用完整 overlap 做 SOLA 对齐，但仅用 1 ms Hann 前沿完成实际混合，避免把上一块尾部的异常波形继续带入。opening 边界单点跳变从 `19592` 降至 `1376`（-93.0%），边界后 2 ms 最大跳变从 `10811` 降至 `4424`，未增加首包延迟。

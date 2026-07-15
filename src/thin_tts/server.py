@@ -84,6 +84,7 @@ class StreamRequest(BaseModel):
     min_chunk_length: Optional[int] = None
     hybrid_switch_tokens: Optional[int] = None
     hybrid_steady_tokens: Optional[int] = None
+    hybrid_buffer_target_ms: Optional[int] = None
     profile_request_id: Optional[str] = None
     rng_isolation: bool = False
     cache_vits_encoded_text: bool = True
@@ -246,6 +247,7 @@ def _request_for(
     min_chunk_length: Optional[int] = None,
     hybrid_switch_tokens: Optional[int] = None,
     hybrid_steady_tokens: Optional[int] = None,
+    hybrid_buffer_target_ms: Optional[int] = None,
     profile_request_id: Optional[str] = None,
     rng_isolation: bool = False,
     cache_vits_encoded_text: bool = True,
@@ -261,6 +263,14 @@ def _request_for(
     # Measured clean at chunk=50 (first-packet ~665ms, ~2x faster than mode 2).
     if mode == 4 and hybrid_switch_tokens is None:
         hybrid_switch_tokens = 50
+    if mode == 4:
+        if hybrid_buffer_target_ms is None:
+            hybrid_buffer_target_ms = 500 if hybrid_steady_tokens is None else 0
+        hybrid_buffer_target_ms = int(hybrid_buffer_target_ms)
+        if hybrid_buffer_target_ms < 0:
+            raise ValueError("hybrid_buffer_target_ms must not be negative")
+    else:
+        hybrid_buffer_target_ms = 0
     request = {
         "text": text,
         "text_lang": "zh",
@@ -283,6 +293,7 @@ def _request_for(
         "min_chunk_length": chunk_length,
         "hybrid_switch_tokens": hybrid_switch_tokens or 0,
         "hybrid_steady_tokens": hybrid_steady_tokens or 0,
+        "hybrid_buffer_target_ms": hybrid_buffer_target_ms,
         "fragment_interval": 0.0,
         "seed": seed,
         "profile_request_id": profile_request_id,
@@ -355,6 +366,7 @@ async def stream(req: StreamRequest):
         min_chunk_length=req.min_chunk_length,
         hybrid_switch_tokens=req.hybrid_switch_tokens,
         hybrid_steady_tokens=req.hybrid_steady_tokens,
+        hybrid_buffer_target_ms=req.hybrid_buffer_target_ms,
         profile_request_id=req.profile_request_id,
         rng_isolation=req.rng_isolation,
         cache_vits_encoded_text=req.cache_vits_encoded_text,

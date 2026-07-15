@@ -1003,6 +1003,7 @@ class Text2SemanticDecoder(nn.Module):
         # for a mute boundary. Only takes effect while mute_emb_sim_matrix is set.
         hybrid_switch_tokens = int(kwargs.get("hybrid_switch_tokens", 0) or 0)
         hybrid_steady_tokens = int(kwargs.get("hybrid_steady_tokens", 0) or 0)
+        hybrid_deadline_provider = kwargs.get("hybrid_deadline_provider")
         MAX_SEQ_LEN = 1536
 
         x = self.ar_text_embedding(x)
@@ -1094,11 +1095,17 @@ class Text2SemanticDecoder(nn.Module):
 
         for idx in decode_iter:
             token_counter+=1
-            active_hybrid_deadline = hybrid_deadline_for_chunk(
-                hybrid_switch_tokens,
-                hybrid_steady_tokens,
-                chunk_index=profile_chunk_idx,
-            )
+            if hybrid_deadline_provider is not None:
+                active_hybrid_deadline = max(
+                    0,
+                    int(hybrid_deadline_provider(profile_chunk_idx)),
+                )
+            else:
+                active_hybrid_deadline = hybrid_deadline_for_chunk(
+                    hybrid_switch_tokens,
+                    hybrid_steady_tokens,
+                    chunk_index=profile_chunk_idx,
+                )
             profile_chunk_stats["tokens"] += 1
             profile_total_stats["tokens"] += 1
             if xy_attn_mask is not None:

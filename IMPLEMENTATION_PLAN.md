@@ -27,3 +27,21 @@
 **Success Criteria**: Voice-profile cache invalidation is fingerprinted and output-equivalent; challenger comparison uses identical hardware, texts, reference voice, and user listening gates.
 **Tests**: Profile parity and invalidation tests; TTFB/RTF/VRAM/CER/speaker-similarity benchmark; blind listening report.
 **Status**: In Progress
+
+## Stage 6: Buffer-Aware Mode 4 Scheduler
+**Goal**: Replace Mode 4's repeated fixed 50-token cap with a playback-buffer-aware deadline while preserving explicit legacy schedules.
+**Success Criteria**: The first chunk remains capped; the cap relaxes above the target buffer and reactivates before predicted underrun; explicit `50/50` and `50/120` requests keep their old behavior.
+**Tests**: Pure scheduler state tests, server request-policy tests, and the complete unit-test suite.
+**Status**: Complete
+
+## Stage 7: Runtime Latency Validation
+**Goal**: Validate the new default on short, medium, and long input under the production Triton/G2PW CUDA profile.
+**Success Criteria**: No predicted playback underrun, unchanged first semantic chunk, fewer long-form chunks, and no TTFB regression beyond run variance.
+**Tests**: Alternating repeated Mode 4 legacy/adaptive profiling with buffer-margin and semantic-hash checks.
+**Status**: Complete
+
+## Stage 8: Listening Gate
+**Goal**: Produce a compact legacy/adaptive Mode 4 listening comparison.
+**Success Criteria**: User confirms that later speech is stable without new overlap, clicks, drift, or pauses.
+**Tests**: HTML listening set for representative medium and long inputs.
+**Status**: Complete
