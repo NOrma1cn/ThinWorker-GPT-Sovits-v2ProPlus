@@ -1,12 +1,17 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "thin-tts-server"
-version = "0.2.0"
+version = "1.0.0"
 description = "GPT-SoVITS v2ProPlus streaming TTS inference server (inference-only, Chinese)"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+authors = [{ name = "NOrma1cn" }]
+keywords = ["tts", "gpt-sovits", "streaming", "triton", "cuda"]
 dependencies = [
     "fastapi>=0.100",
     "uvicorn[standard]>=0.23",
@@ -36,6 +41,10 @@ dev = ["pytest", "httpx", "build"]
 
 [project.scripts]
 thin-tts-server = "thin_tts.cli:main"
+
+[project.urls]
+Repository = "https://github.com/NOrma1cn/ThinWorker-GPT-Sovits-v2ProPlus"
+Changelog = "https://github.com/NOrma1cn/ThinWorker-GPT-Sovits-v2ProPlus/blob/main/CHANGES.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

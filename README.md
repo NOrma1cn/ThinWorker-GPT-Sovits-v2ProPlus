@@ -2,15 +2,17 @@
 
 基于 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) v2ProPlus 的**精简流式 TTS 推理服务器**。仅保留推理代码、v2ProPlus 版本、中文支持，去掉训练代码、多版本分支、多语言 G2P、BigVGAN vocoder 等冗余模块。
 
-打包为独立 Python wheel（~1.1MB），安装后即可通过 HTTP API 进行流式语音合成。
+打包为独立 Python wheel（约 1.2 MB），安装后即可通过 HTTP API 进行流式语音合成。1.0 默认使用经过试听验证的 buffer-aware Mode 4，并为每个请求隔离 T2S/VITS 随机数流。
 
 ## 环境要求
 
-- Python 3.10+
-- NVIDIA GPU（需 CUDA 支持）
-- CUDA Toolkit 11.8+ / 12.x
-- PyTorch 2.1+（需匹配 CUDA 版本）
-- 显存建议 ≥ 4GB（模型运行时约占 2-3GB）
+- Windows 11 主机；正式 Triton 链路运行在 WSL2 Linux
+- NVIDIA RTX 40 系列 GPU，以及支持 WSL CUDA 的 NVIDIA 驱动
+- WSL 内 Python 3.10+
+- CUDA 版 PyTorch 2.1+（版本需与驱动兼容）
+- 显存建议 ≥ 4 GB；G2PW CUDA 还会额外占用约 1.2 GB
+
+原生 Windows Python 可以使用 SDPA 回退链路，但无法启用正式 Triton Full Graph。分发给其他机器时应将 WSL2、驱动和 CUDA 版 PyTorch 作为部署前置条件，而不是把本机虚拟环境整体复制过去。
 
 ## T2S 推理后端
 
@@ -82,7 +84,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ### 2. 安装 thin-tts-server
 
 ```bash
-pip install dist/thin_tts_server-0.2.0-py3-none-any.whl
+pip install dist/thin_tts_server-1.0.0-py3-none-any.whl
 ```
 
 或从源码安装：
@@ -121,17 +123,17 @@ server:
   g2pw_backend: "auto"
 
 weights:
-  # 模型权重路径（改为你的实际路径）
-  t2s_weights: "D:/GPT-SoVITS/GPT_weights_v2ProPlus/your_model-e14.ckpt"
-  vits_weights: "D:/GPT-SoVITS/SoVITS_weights_v2ProPlus/your_model_e10_s1290.pth"
+  # WSL 路径；改为你的实际位置
+  t2s_weights: "/mnt/d/GPT-SoVITS/GPT_weights_v2ProPlus/your_model-e14.ckpt"
+  vits_weights: "/mnt/d/GPT-SoVITS/SoVITS_weights_v2ProPlus/your_model_e10_s1290.pth"
   # vits_lora: ""           # 如有 LoRA 权重，取消注释并填入路径
-  bert_path: "D:/GPT-SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
-  hubert_path: "D:/GPT-SoVITS/pretrained_models/chinese-hubert-base"
-  sv_path: "D:/GPT-SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
-  ref_audio: "D:/thin-tts/reference.wav"
+  bert_path: "/mnt/d/GPT-SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+  hubert_path: "/mnt/d/GPT-SoVITS/pretrained_models/chinese-hubert-base"
+  sv_path: "/mnt/d/GPT-SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+  ref_audio: "/mnt/d/thin-tts/reference.wav"
   ref_text: "参考音频对应文本。"
   # 可选：首次启动自动生成，后续跳过 HuBERT/SV 加载。
-  voice_profile: "D:/thin-tts/voice-profile.pt"
+  voice_profile: "/mnt/d/thin-tts/voice-profile.pt"
 ```
 
 `voice_profile` 适用于服务端固定参考音频的部署。文件不存在、模型/参考音频/参考文本发生变化或 profile 不可读时，服务会用完整链路 warmup 后原子重建；命中时直接恢复 prompt semantic、reference spectrogram、speaker embedding 和 prompt frontend cache，并跳过 CN-HuBERT 与 speaker encoder。`/health` 的 `voice_profile` 字段会报告 `disabled`、`compiled` 或 `loaded`。
@@ -166,7 +168,7 @@ INFO:     Uvicorn running on http://0.0.0.0:9881
 
 ```bash
 curl http://localhost:9881/health
-# {"status":"ok","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
+# {"status":"ok","server":"thin-tts-server","version":"1.0.0","loaded":true,...}
 ```
 
 **流式合成：**
@@ -176,9 +178,6 @@ curl -X POST http://localhost:9881/stream \
   -H "Content-Type: application/json" \
   -d '{
     "text": "你好，这是 thin-tts-server 的测试。",
-    "ref_audio_path": "D:/reference_audio.wav",
-    "ref_text": "这是参考音频对应的文本内容。",
-    "mode": 3,
     "seed": 8110
   }' \
   --output test.wav
@@ -194,7 +193,7 @@ curl -X POST http://localhost:9881/stream \
 
 **响应示例：**
 ```json
-{"status":"ok","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
+{"status":"ok","server":"thin-tts-server","version":"1.0.0","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
 ```
 
 ### POST /stream
@@ -206,27 +205,19 @@ curl -X POST http://localhost:9881/stream \
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `text` | string | 是 | — | 待合成文本 |
-| `ref_audio_path` | string | 是 | — | 参考音频路径（.wav） |
-| `ref_text` | string | 是 | — | 参考音频对应文本 |
-| `mode` | int | 否 | 3 | 文本切分模式（0-5），推荐 3 |
+| `mode` | int | 否 | 4 | `2` 自然静音边界；`3` 固定短块；`4` 缓冲水位混合策略（推荐） |
 | `seed` | int | 否 | 8110 | 随机种子，影响生成多样性 |
-| `speed_factor` | float | 否 | 1.0 | 语速倍率 |
-| `top_k` | int | 否 | 15 | AR 采样 top_k |
-| `top_p` | float | 否 | 1.0 | AR 采样 top_p |
-| `temperature` | float | 否 | 1.0 | AR 采样温度 |
-| `fragment_interval` | float | 否 | 0.3 | 分句间隔（秒） |
+| `min_chunk_length` | int | 否 | 10 | 静音边界搜索的最小 semantic token 数 |
 | `hybrid_switch_tokens` | int | 否 | 50 | Mode 4 首块及低缓冲时的 semantic token 上限 |
 | `hybrid_buffer_target_ms` | int | 否 | 500 | Mode 4 预测播放缓冲水位；`0` 关闭动态水位 |
 | `hybrid_steady_tokens` | int | 否 | — | 显式固定后续上限；提供该字段时保留旧的固定 deadline 策略 |
+| `rng_isolation` | bool | 否 | true | 使用请求级 T2S/VITS RNG，保证同 seed 不受其他请求影响 |
+| `cache_vits_encoded_text` | bool | 否 | true | 缓存固定目标文本的 VITS 编码结果 |
 
 **响应：** `Content-Type: audio/wav`，流式返回 PCM16 WAV 数据。
 
 > 服务器使用一个共享的 GPU 推理 pipeline。并发请求会在服务内排队并串行执行，
 > 以隔离 T2S KV cache、随机数状态和参考音频缓存，避免请求之间互相污染。
-
-### POST /tts
-
-非流式合成（一次性返回完整音频）。参数同 `/stream`。
 
 ## 配置优先级
 
@@ -280,4 +271,4 @@ pip install soundfile
 
 ## 许可证
 
-本项目基于 GPT-SoVITS，遵循其原始许可证。
+项目自身修改采用 [MIT License](LICENSE)。上游来源、Apache-2.0 与其他 MIT 组件的归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)。模型权重与自动下载的模型资产可能有独立许可，分发前需另行核对。

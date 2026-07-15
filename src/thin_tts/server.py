@@ -6,15 +6,16 @@ import sys
 import threading
 import time
 from io import BytesIO
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
+from thin_tts import __version__
 from thin_tts.config import ServerConfig
 from thin_tts.g2pw_backend import (
     configure_g2pw_backend,
@@ -78,15 +79,17 @@ def _backend_status(pipeline) -> dict:
 
 
 class StreamRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     text: str
-    mode: int = 2
+    mode: Literal[2, 3, 4] = 4
     seed: int = 8110
-    min_chunk_length: Optional[int] = None
-    hybrid_switch_tokens: Optional[int] = None
-    hybrid_steady_tokens: Optional[int] = None
-    hybrid_buffer_target_ms: Optional[int] = None
+    min_chunk_length: Optional[int] = Field(default=None, ge=1)
+    hybrid_switch_tokens: Optional[int] = Field(default=None, ge=0)
+    hybrid_steady_tokens: Optional[int] = Field(default=None, ge=0)
+    hybrid_buffer_target_ms: Optional[int] = Field(default=None, ge=0)
     profile_request_id: Optional[str] = None
-    rng_isolation: bool = False
+    rng_isolation: bool = True
     cache_vits_encoded_text: bool = True
 
 
@@ -249,7 +252,7 @@ def _request_for(
     hybrid_steady_tokens: Optional[int] = None,
     hybrid_buffer_target_ms: Optional[int] = None,
     profile_request_id: Optional[str] = None,
-    rng_isolation: bool = False,
+    rng_isolation: bool = True,
     cache_vits_encoded_text: bool = True,
 ) -> dict:
     chunk_length = min_chunk_length if min_chunk_length is not None else 10
@@ -343,6 +346,7 @@ async def health():
     return {
         "status": "ok",
         "server": "thin-tts-server",
+        "version": __version__,
         "loaded": PIPELINE is not None,
         "streaming": True,
         "t2s_backend": _backend_status(PIPELINE),

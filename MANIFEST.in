@@ -1,1 +1,6 @@
 recursive-include src/thin_tts/text *.txt *.rep *.pickle
+include LICENSE
+include THIRD_PARTY_NOTICES.md
+include CHANGES.md
+include RELEASE_NOTES_v1.0.0.md
+recursive-include LICENSES *.txt

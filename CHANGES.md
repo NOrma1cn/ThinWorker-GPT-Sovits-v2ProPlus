@@ -2,13 +2,18 @@
 
 本文档记录了从 GPT-SoVITS 原始代码到 thin-tts-server 独立包过程中的所有修改，包括裁剪、Bug 修复、性能优化，以及已尝试但不可行的方向。
 
-## Unreleased
+## v1.0.0 — 2026-07-15
 
+- 将经过完整质量验证的 buffer-aware Mode 4 与请求级 RNG 隔离设为 `/stream` 默认合同；API 只接受模式 2/3/4，并拒绝未知字段，避免请求级参考音频等旧参数被静默忽略。
 - Mode 4 默认改为 500 ms 播放缓冲水位调度：首块及低水位时保留 50-token 上限，缓冲充足后等待自然静音边界；deadline 在每个 semantic chunk 内冻结，避免 GPU 墙钟抖动改变切块。显式 `50/50`、`50/120` 仍可回退。long 从 16 块降至稳定 3 块、强制接缝从 3 降至 0，总耗时中位数 `1870.0 → 1648.0 ms`，最小预测缓冲余量 497.9 ms；用户试听确认后半段更稳定、失真更少且更干净。
+- 纯中文输入绕过语言检测；RoBERTa 改用 base model，跳过未使用的 MLM head，前端输出保持一致。
+- T2S/VITS 使用相互独立的请求级随机数生成器，同文本、同 seed 在不同切块策略和请求历史下保持 semantic 一致。
+- PCM16 转换在缩放前裁剪到 `[-1, 1]` 并乘 32767，消除正满幅环绕到 -32768 的单样本爆音。
 - 新增显式 fixed-voice profile：首次 warmup 原子编译约 1 MiB 的 prompt semantic/reference/SV/prompt frontend cache，后续启动在模型初始化前验证 schema、模型/参考音频/参考文本 fingerprint，命中时跳过 CN-HuBERT 与 ERes2Net。实测释放约 252 MiB 可用显存，卸载前后 PCM bitwise equal；状态通过 `/health` 暴露。
 - VITS 流式链路默认缓存固定 phones 的 `text_embedding + encoder_text` 输出，并保留请求级回退。long VITS 累计中位数改善约 20.3%，端到端改善约 5.7%，PCM bitwise equal。
 - 修复流式合成最后一个音频 chunk 未经过 SOLA crossfade，导致尾部拼接出现爆音的问题。final chunk 使用完整 overlap 做 SOLA 对齐，但仅用 1 ms Hann 前沿完成实际混合，避免把上一块尾部的异常波形继续带入。opening 边界单点跳变从 `19592` 降至 `1376`（-93.0%），边界后 2 ms 最大跳变从 `10811` 降至 `4424`，未增加首包延迟。
 - 将 G2PW CUDA Provider 接入正式链路，支持 `auto | cpu | cuda`、可选显存上限、CUDA 初始化失败自动回退 CPU，并通过 `/health` 与结构化日志暴露实际 Provider。固定已验证的 `onnxruntime-gpu==1.23.2`，移除会传递安装 CPU ORT 的冗余外部 `g2pw` 依赖；CPU/CUDA 注音输出一致，热态 G2PW 约快 7 倍，Full Graph 首包实测从 `158.5/195.1 ms` 降至 `111.0/130.4 ms`，额外显存约 1.2 GB。
+- 新增 MIT 主许可证、Apache-2.0 全文和第三方来源声明；源码、wheel 元数据与健康检查统一报告 1.0.0。
 
 ## v0.2.0 — 正式 Linux/Triton 后端
 

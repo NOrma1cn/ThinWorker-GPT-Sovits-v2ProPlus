@@ -723,3 +723,15 @@ Triton、G2PW CUDA、fixed-voice profile、seed `314159`、request-local RNG 和
 Triton、G2PW CUDA、buffer-aware Mode 4、seed `314159` 和 request-local RNG 下，current/consistent 各交替运行 7 次。short、medium、long 的切块序列分别稳定为 `18/27`、`11/50/70`、`35/230/191`；两组首包 PCM bitwise equal，首块与最终 semantic SHA-256 相同，最小预测缓冲余量分别不低于约 544/186/596 ms。
 
 consistent 的全局 p99.9 sample jump 只出现不可采信的微小变化：short `6156.0 → 6155.2`、medium `8951.9 → 8947.9`、long `7619.7 → 7617.9`；接缝单点跳变基本不变。用户无法稳定分辨两组，且确认 current 与 consistent 均无失真。说明 V9 减少强制切块和 VITS/SOLA handoff 后，overlap noise 已不再是可听瓶颈；继续保留状态缓存没有质量收益。
+
+### 2026-07-15：V11 v1.0.0 release gate
+
+状态：通过。未创建远程 tag 或 GitHub Release。
+
+1.0 冻结 `/stream` 合同：默认 `mode=4`、`rng_isolation=true`、`cache_vits_encoded_text=true`；模式只接受 2/3/4，未知字段由 Pydantic 返回 422。固定参考音频继续由启动配置提供，不再在 README 中声明请求级 `ref_audio_path/ref_text`；不存在的 `/tts` 文档已移除。`/health` 增加 package version。
+
+许可证审计以源码内上游链接为清单，并通过官方 GitHub license API 核对：GPT-SoVITS、pypinyin-g2pW、vector-quantize-pytorch、UniLM 为 MIT；VALL-E、3D-Speaker、PaddleSpeech/g2pW、WeSpeaker、Lightning Bolts 为 Apache-2.0。项目加入 MIT 主许可证、Apache-2.0 全文和第三方来源声明；SoundStorm 上游仓库未提供独立 license 文件，该来源关系在 notices 中明确记录，当前文件由 GPT-SoVITS MIT 分发进入本项目。
+
+最终 wheel 安装到独立 WSL target，运行目录为 `/tmp`，`PYTHONPATH` 不包含仓库 `src`。导入报告 `thin_tts 1.0.0` 且来源为 wheel target。CUDA 正式启动 health：Triton `captured`、G2PW CUDA `active`、voice profile `loaded`。不提供策略字段的 short/medium/long 请求分别得到切块 `18/27`、`11/50/70`、`35/230/191`，profile 确认 buffer target 500、RNG isolation 与 VITS text cache 均启用，最终 semantic SHA-256 与先前正式基线一致，三段均 0 clipping。旧请求级参考音频字段实际返回 422。
+
+同一 wheel 使用 CLI 覆盖启动 SDPA + G2PW CPU，health 分别报告 `active=sdpa`、`active=cpu`，随后完成一条 2.12 秒默认 Mode 4 音频合成且 0 clipping。全量单测为 `68 passed, 1 skipped`；sdist/wheel 均成功构建且无 setuptools deprecation warning。最终 artifact hash 记录在 `SHA256SUMS`。
