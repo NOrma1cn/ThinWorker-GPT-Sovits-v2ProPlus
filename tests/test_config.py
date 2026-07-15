@@ -13,6 +13,7 @@ def _write_config(tmp_path: Path, *, half: bool = False) -> Path:
         path.touch()
         weights[name] = str(path)
     weights["ref_text"] = "参考文本"
+    weights["voice_profile"] = str(tmp_path / "voice-profile.pt")
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -49,6 +50,7 @@ def test_omitted_cli_options_preserve_yaml_server_values(tmp_path):
     assert config.t2s_backend == "sdpa"
     assert config.g2pw_backend == "cpu"
     assert config.g2pw_cuda_memory_limit_mb == 1024
+    assert config.voice_profile == str(tmp_path / "voice-profile.pt")
 
 
 def test_explicit_cli_options_override_yaml_server_values(tmp_path):
@@ -71,6 +73,8 @@ def test_explicit_cli_options_override_yaml_server_values(tmp_path):
             "cuda",
             "--g2pw-cuda-memory-limit-mb",
             "1536",
+            "--voice-profile",
+            str(tmp_path / "override-profile.pt"),
         ]
     )
     config = ServerConfig.from_args(args)
@@ -82,6 +86,7 @@ def test_explicit_cli_options_override_yaml_server_values(tmp_path):
     assert config.t2s_backend == "auto"
     assert config.g2pw_backend == "cuda"
     assert config.g2pw_cuda_memory_limit_mb == 1536
+    assert config.voice_profile == str(tmp_path / "override-profile.pt")
 
 
 def test_environment_can_select_g2pw_backend(tmp_path, monkeypatch):

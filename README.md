@@ -112,20 +112,29 @@ pip install .
 创建 `config.yaml`：
 
 ```yaml
-# 服务器配置
-host: "0.0.0.0"
-port: 9881
-device: "cuda"
-half: true                # 使用 FP16 推理（推荐，节省显存）
+server:
+  host: "0.0.0.0"
+  port: 9881
+  device: "cuda"
+  half: true                # 使用 FP16 推理（推荐，节省显存）
+  t2s_backend: "auto"
+  g2pw_backend: "auto"
 
-# 模型权重路径（改为你的实际路径）
-t2s_weights: "D:/GPT-SoVITS/GPT_weights_v2ProPlus/your_model-e14.ckpt"
-vits_weights: "D:/GPT-SoVITS/SoVITS_weights_v2ProPlus/your_model_e10_s1290.pth"
-# vits_lora: ""           # 如有 LoRA 权重，取消注释并填入路径
-bert_path: "D:/GPT-SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
-hubert_path: "D:/GPT-SoVITS/pretrained_models/chinese-hubert-base"
-sv_path: "D:/GPT-SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+weights:
+  # 模型权重路径（改为你的实际路径）
+  t2s_weights: "D:/GPT-SoVITS/GPT_weights_v2ProPlus/your_model-e14.ckpt"
+  vits_weights: "D:/GPT-SoVITS/SoVITS_weights_v2ProPlus/your_model_e10_s1290.pth"
+  # vits_lora: ""           # 如有 LoRA 权重，取消注释并填入路径
+  bert_path: "D:/GPT-SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+  hubert_path: "D:/GPT-SoVITS/pretrained_models/chinese-hubert-base"
+  sv_path: "D:/GPT-SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+  ref_audio: "D:/thin-tts/reference.wav"
+  ref_text: "参考音频对应文本。"
+  # 可选：首次启动自动生成，后续跳过 HuBERT/SV 加载。
+  voice_profile: "D:/thin-tts/voice-profile.pt"
 ```
+
+`voice_profile` 适用于服务端固定参考音频的部署。文件不存在、模型/参考音频/参考文本发生变化或 profile 不可读时，服务会用完整链路 warmup 后原子重建；命中时直接恢复 prompt semantic、reference spectrogram、speaker embedding 和 prompt frontend cache，并跳过 CN-HuBERT 与 speaker encoder。`/health` 的 `voice_profile` 字段会报告 `disabled`、`compiled` 或 `loaded`。
 
 ### 5. 启动服务
 

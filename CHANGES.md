@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 新增显式 fixed-voice profile：首次 warmup 原子编译约 1 MiB 的 prompt semantic/reference/SV/prompt frontend cache，后续启动在模型初始化前验证 schema、模型/参考音频/参考文本 fingerprint，命中时跳过 CN-HuBERT 与 ERes2Net。实测释放约 252 MiB 可用显存，卸载前后 PCM bitwise equal；状态通过 `/health` 暴露。
+- VITS 流式链路默认缓存固定 phones 的 `text_embedding + encoder_text` 输出，并保留请求级回退。long VITS 累计中位数改善约 20.3%，端到端改善约 5.7%，PCM bitwise equal。
 - 修复流式合成最后一个音频 chunk 未经过 SOLA crossfade，导致尾部拼接出现爆音的问题。final chunk 使用完整 overlap 做 SOLA 对齐，但仅用 1 ms Hann 前沿完成实际混合，避免把上一块尾部的异常波形继续带入。opening 边界单点跳变从 `19592` 降至 `1376`（-93.0%），边界后 2 ms 最大跳变从 `10811` 降至 `4424`，未增加首包延迟。
 - 将 G2PW CUDA Provider 接入正式链路，支持 `auto | cpu | cuda`、可选显存上限、CUDA 初始化失败自动回退 CPU，并通过 `/health` 与结构化日志暴露实际 Provider。固定已验证的 `onnxruntime-gpu==1.23.2`，移除会传递安装 CPU ORT 的冗余外部 `g2pw` 依赖；CPU/CUDA 注音输出一致，热态 G2PW 约快 7 倍，Full Graph 首包实测从 `158.5/195.1 ms` 降至 `111.0/130.4 ms`，额外显存约 1.2 GB。
 

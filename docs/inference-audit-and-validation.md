@@ -663,3 +663,29 @@ POC 捕获 flow+decoder，回放计时包含静态输入 copy 和输出 clone；
 6 秒是唯一略快的策略，但只让 `enc_p` 改善 5.3 ms、VITS total 改善约 1.5%、服务端端到端改善约 0.8%；客户端约 1.4% 的变化仍在系统抖动量级。4 秒和 3 秒没有收益。
 
 opening 只有 131 semantic tokens，因此 6 秒策略没有发生截断，WAV 与 full bitwise equal；4/3 秒和所有 long bounded 策略都会改变音频。由于近似方案已经改变音频却没有稳定速度价值，不应再消耗主观质量预算。试听产物仍保留在 `eval_output/vits_context/index.html` 供复核，但不进入正式链路。
+
+### 2026-07-15：V8 Offline fixed-voice profile
+
+状态：接受为显式配置的正式路径。未配置 `voice_profile` 时保持原启动行为；配置后首次编译，后续命中时跳过 CN-HuBERT 与 ERes2Net 加载。
+
+profile schema v1 保存：
+
+- prompt semantic tokens
+- reference spectrogram 与 16 kHz reference audio tensor
+- speaker embedding list
+- prompt phones、BERT features、normalized text 与 language
+- reference path 和 auxiliary-reference state
+
+metadata 包含 T2S/VITS/BERT/HuBERT/SV artifact signature、reference audio SHA-256、prompt text/language 和 schema version。reference、prompt 或 checkpoint 常规变更都会得到 `fingerprint_mismatch`；缺失、不可读或 cache 字段不完整会进入完整 warmup 重建，保存使用同目录临时文件加原子 replace。
+
+同进程 POC 在 cache 填满后卸载 CN-HuBERT 与 ERes2Net：
+
+| Metric | Before | After |
+|---|---:|---:|
+| CUDA allocated | 1461.7 MiB | 1169.6 MiB |
+| CUDA reserved | 1544.0 MiB | 1292.0 MiB |
+| CUDA free | 8383.0 MiB | 8635.0 MiB |
+
+可用显存增加约 252 MiB；卸载前后均为 167,667 PCM samples，SHA-256 同为 `f4a5c121172c...e7d5`，bitwise equal。
+
+正式两次独立启动验证：第一次 health 为 `compiled`、保存文件 1,084,893 bytes、encoder 已卸载；第二次为 `loaded`，初始化日志不再出现 CN-HuBERT/SV 加载。loaded 服务 warm opening 的 WAV SHA-256 为稳定基线 `8ce97e350680...f401b`，TTFB 约 122 ms。跨进程第一个未覆盖 shape 仍存在此前已观察到的 CUDA cold-shape 数值差异，不由 voice profile 引入；warm 后 profile/no-profile 与回退路径一致。

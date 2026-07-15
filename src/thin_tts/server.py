@@ -21,10 +21,37 @@ from thin_tts.g2pw_backend import (
     cuda_device_id_from_device,
     g2pw_backend_status,
 )
+from thin_tts.voice_profile import (
+    build_voice_profile_metadata,
+    load_voice_profile,
+    save_voice_profile,
+)
 
 PIPELINE = None
 _config: Optional[ServerConfig] = None
 _INFERENCE_LOCK = threading.Lock()
+_VOICE_PROFILE_STATUS = {
+    "configured": False,
+    "state": "disabled",
+    "reason": None,
+    "path": None,
+    "voice_encoders_loaded": True,
+}
+
+
+def _voice_profile_metadata(cfg: ServerConfig) -> dict:
+    return build_voice_profile_metadata(
+        artifacts={
+            "t2s": cfg.t2s_weights,
+            "vits": cfg.vits_lora or cfg.vits_weights,
+            "bert": cfg.bert_path,
+            "hubert": cfg.hubert_path,
+            "sv": cfg.sv_path,
+        },
+        reference_audio=cfg.ref_audio,
+        prompt_text=cfg.ref_text,
+        prompt_lang="zh",
+    )
 
 
 def _backend_status(pipeline) -> dict:
@@ -63,11 +90,33 @@ class StreamRequest(BaseModel):
 
 
 def _load_pipeline():
-    global PIPELINE
+    global PIPELINE, _VOICE_PROFILE_STATUS
     if PIPELINE is not None:
         return PIPELINE
 
     cfg = _config
+    voice_profile_cache = None
+    voice_profile_metadata = None
+    if cfg.voice_profile:
+        voice_profile_metadata = _voice_profile_metadata(cfg)
+        voice_profile_cache, reason = load_voice_profile(
+            cfg.voice_profile,
+            expected_metadata=voice_profile_metadata,
+        )
+        _VOICE_PROFILE_STATUS = {
+            "configured": True,
+            "state": "loaded" if voice_profile_cache is not None else "rebuilding",
+            "reason": reason,
+            "path": str(cfg.voice_profile),
+            "voice_encoders_loaded": voice_profile_cache is None,
+        }
+        print(
+            json.dumps(
+                {"event": "thin_tts_voice_profile", **_VOICE_PROFILE_STATUS},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
 
     # Set env vars BEFORE pipeline import — chinese2.py reads bert_path at module load time
     if cfg.bert_path:
@@ -102,7 +151,7 @@ def _load_pipeline():
     }
 
     tts_config = TTS_Config(pipeline_config)
-    PIPELINE = TTS(tts_config)
+    PIPELINE = TTS(tts_config, voice_profile_cache=voice_profile_cache)
 
     # Warmup
     print(json.dumps({"event": "thin_tts_warmup"}), flush=True)
@@ -131,6 +180,29 @@ def _load_pipeline():
     }
     for _ in PIPELINE.run(warmup_req):
         pass
+
+    if cfg.voice_profile and voice_profile_cache is None:
+        compiled_cache = PIPELINE.export_voice_profile_cache()
+        save_voice_profile(
+            cfg.voice_profile,
+            metadata=voice_profile_metadata,
+            cache=compiled_cache,
+        )
+        PIPELINE.unload_voice_encoders()
+        _VOICE_PROFILE_STATUS = {
+            "configured": True,
+            "state": "compiled",
+            "reason": None,
+            "path": str(cfg.voice_profile),
+            "voice_encoders_loaded": False,
+        }
+        print(
+            json.dumps(
+                {"event": "thin_tts_voice_profile", **_VOICE_PROFILE_STATUS},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
 
     return PIPELINE
 
@@ -264,6 +336,7 @@ async def health():
         "streaming": True,
         "t2s_backend": _backend_status(PIPELINE),
         "g2pw_backend": g2pw_backend_status(),
+        "voice_profile": _VOICE_PROFILE_STATUS,
     }
 
 
@@ -310,5 +383,6 @@ def run(cfg: ServerConfig):
         "port": cfg.port,
         "t2s_backend": _backend_status(PIPELINE),
         "g2pw_backend": g2pw_backend_status(),
+        "voice_profile": _VOICE_PROFILE_STATUS,
     }), flush=True)
     uvicorn.run(app, host=cfg.host, port=cfg.port)

@@ -39,6 +39,7 @@ from thin_tts.text.text_segmentation import splits
 from thin_tts.pipeline.text_preprocessor import TextPreprocessor
 from thin_tts.models.sv import SV
 from thin_tts.backends import configure_t2s_backend
+from thin_tts.voice_profile import REQUIRED_CACHE_KEYS
 
 resample_transform_dict = {}
 
@@ -237,7 +238,12 @@ class TTS_Config:
 
 
 class TTS:
-    def __init__(self, configs: Union[dict, str, TTS_Config]):
+    def __init__(
+        self,
+        configs: Union[dict, str, TTS_Config],
+        *,
+        voice_profile_cache: dict = None,
+    ):
         if isinstance(configs, TTS_Config):
             self.configs = configs
         else:
@@ -249,6 +255,7 @@ class TTS:
         self.bert_model: AutoModelForMaskedLM = None
         self.cnhuhbert_model: CNHubert = None
         self.sv_model = None
+        self._load_voice_encoders = voice_profile_cache is None
 
         self._init_models()
 
@@ -270,6 +277,8 @@ class TTS:
             "norm_text": None,
             "aux_ref_audio_paths": [],
         }
+        if voice_profile_cache is not None:
+            self.restore_voice_profile_cache(voice_profile_cache)
 
         self.stop_flag: bool = False
         self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
@@ -280,7 +289,8 @@ class TTS:
         self.init_t2s_weights(self.configs.t2s_weights_path)
         self.init_vits_weights(self.configs.vits_weights_path)
         self.init_bert_weights(self.configs.bert_base_path)
-        self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
+        if self._load_voice_encoders:
+            self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
         # self.enable_half_precision(self.configs.is_half)
 
     def _configure_t2s_backend(self):
@@ -314,7 +324,7 @@ class TTS:
     def init_vits_weights(self, weights_path: str):
         self.configs.vits_weights_path = weights_path
         version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
-        if "Pro" in model_version:
+        if "Pro" in model_version and self._load_voice_encoders:
             self.init_sv_model()
 
         dict_s2 = load_sovits_new(weights_path)
@@ -456,6 +466,66 @@ class TTS:
         self._set_ref_spec(ref_audio_path)
         self._set_ref_audio_path(ref_audio_path)
         self.prompt_cache["sv_emb_list"] = None
+
+    @staticmethod
+    def _map_profile_tensors(value, transform):
+        if isinstance(value, torch.Tensor):
+            return transform(value)
+        if isinstance(value, list):
+            return [TTS._map_profile_tensors(item, transform) for item in value]
+        if isinstance(value, tuple):
+            return tuple(TTS._map_profile_tensors(item, transform) for item in value)
+        if isinstance(value, dict):
+            return {
+                key: TTS._map_profile_tensors(item, transform)
+                for key, item in value.items()
+            }
+        return value
+
+    def export_voice_profile_cache(self) -> dict:
+        missing = REQUIRED_CACHE_KEYS.difference(self.prompt_cache)
+        if missing:
+            raise ValueError(f"voice profile cache is missing keys: {sorted(missing)}")
+        if self.prompt_cache["prompt_semantic"] is None:
+            raise ValueError("voice profile prompt_semantic is empty")
+        if not self.prompt_cache["refer_spec"]:
+            raise ValueError("voice profile refer_spec is empty")
+        if not self.prompt_cache.get("sv_emb_list"):
+            raise ValueError("voice profile sv_emb_list is empty")
+        return {
+            key: self._map_profile_tensors(
+                self.prompt_cache[key],
+                lambda tensor: tensor.detach().cpu().clone(),
+            )
+            for key in REQUIRED_CACHE_KEYS
+        }
+
+    def restore_voice_profile_cache(self, cache: dict) -> None:
+        missing = REQUIRED_CACHE_KEYS.difference(cache)
+        if missing:
+            raise ValueError(f"voice profile cache is missing keys: {sorted(missing)}")
+        device = self.configs.device
+        restored = {
+            key: self._map_profile_tensors(
+                cache[key],
+                lambda tensor: tensor.to(device),
+            )
+            for key in REQUIRED_CACHE_KEYS
+        }
+        self.prompt_cache.update(restored)
+
+    def unload_voice_encoders(self) -> None:
+        is_cuda = torch.cuda.is_available() and str(self.configs.device).startswith("cuda")
+        if is_cuda:
+            torch.cuda.synchronize(self.configs.device)
+        hubert = self.cnhuhbert_model
+        speaker = self.sv_model
+        self.cnhuhbert_model = None
+        self.sv_model = None
+        del hubert, speaker
+        gc.collect()
+        if is_cuda:
+            torch.cuda.empty_cache()
 
     def _set_ref_audio_path(self, ref_audio_path):
         self.prompt_cache["ref_audio_path"] = ref_audio_path

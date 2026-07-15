@@ -46,6 +46,11 @@ def build_parser():
     parser.add_argument("--sv-path", default=None, help="Path to SV model checkpoint (.ckpt)")
     parser.add_argument("--ref-audio", default=None, help="Path to reference audio (.wav)")
     parser.add_argument("--ref-text", default=None, help="Reference audio transcript text")
+    parser.add_argument(
+        "--voice-profile",
+        default=None,
+        help="Optional compiled fixed-voice profile path (.pt)",
+    )
     return parser
 
 

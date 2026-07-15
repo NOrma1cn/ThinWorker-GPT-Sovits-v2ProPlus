@@ -27,6 +27,7 @@ class ServerConfig:
     sv_path: str = ""
     ref_audio: str = ""
     ref_text: str = ""
+    voice_profile: Optional[str] = None
 
     @classmethod
     def from_args(cls, args) -> "ServerConfig":
@@ -84,7 +85,13 @@ class ServerConfig:
             ref_audio=resolve(args.ref_audio, "THIN_TTS_REF_AUDIO",
                               weights_cfg.get("ref_audio")),
             ref_text=resolve(args.ref_text, "THIN_TTS_REF_TEXT",
-                             weights_cfg.get("ref_text", "")),
+                              weights_cfg.get("ref_text", "")),
+            voice_profile=resolve(
+                args.voice_profile,
+                "THIN_TTS_VOICE_PROFILE",
+                weights_cfg.get("voice_profile"),
+                None,
+            ),
         )
 
         cfg._validate()

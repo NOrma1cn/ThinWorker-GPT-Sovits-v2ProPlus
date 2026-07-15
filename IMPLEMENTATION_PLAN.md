@@ -26,4 +26,4 @@
 **Goal**: Validate offline fixed-voice profiles and compare the optimized chain with at least one modern Chinese streaming TTS family.
 **Success Criteria**: Voice-profile cache invalidation is fingerprinted and output-equivalent; challenger comparison uses identical hardware, texts, reference voice, and user listening gates.
 **Tests**: Profile parity and invalidation tests; TTFB/RTF/VRAM/CER/speaker-similarity benchmark; blind listening report.
-**Status**: Not Started
+**Status**: In Progress
