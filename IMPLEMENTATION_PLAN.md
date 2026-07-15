@@ -45,3 +45,21 @@
 **Success Criteria**: User confirms that later speech is stable without new overlap, clicks, drift, or pauses.
 **Tests**: HTML listening set for representative medium and long inputs.
 **Status**: Complete
+
+## Stage 9: Position-Consistent VITS Noise POC
+**Goal**: Reuse the same request-local noise values for acoustic frames that overlap consecutive VITS chunks, without changing the first chunk or the default path.
+**Success Criteria**: First-call noise is bitwise equal to the current generator; overlap frames reuse cached noise; new frames preserve the current RNG sequence; invalid frame gaps fail fast.
+**Tests**: Focused CPU noise-cache tests and the complete unit-test suite.
+**Status**: Complete
+
+## Stage 10: Noise POC Runtime Validation
+**Goal**: Compare current and position-consistent noise with identical Mode 4 scheduling, seed, and semantic output.
+**Success Criteria**: Identical first package and semantic hashes, unchanged chunk schedule and buffer margin, plus objective seam metrics and latency measurements.
+**Tests**: Alternating repeated medium/long benchmark under Triton/G2PW CUDA.
+**Status**: Complete
+
+## Stage 11: Noise POC Listening Gate
+**Goal**: Determine whether overlap-consistent VITS noise audibly reduces residual distortion.
+**Success Criteria**: User listening result decides promotion or rejection; no automatic default change.
+**Tests**: Compact current/consistent HTML listening set.
+**Status**: Complete

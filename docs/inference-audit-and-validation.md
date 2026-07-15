@@ -713,3 +713,13 @@ Triton、G2PW CUDA、fixed-voice profile、seed `314159`、request-local RNG 和
 | long | 229.7 ms | 246.4 ms | 1870.0 ms | 1648.0 ms |
 
 两组每个文本的首块 token 数和首块 semantic SHA-256 相同，最终 semantic token 数/hash 也相同。long buffer 路径的跨运行 PCM 差异为 CUDA 大 shape 数值噪声：相关系数约 `0.9999998`、最大 93/32768，不是语义或切块漂移。用户试听确认没有首包后停顿或新增质量问题，并观察到后半段失真减少、声音更干净。
+
+### 2026-07-15：V10 Position-consistent VITS overlap noise
+
+状态：拒绝。实验实现、API 开关与测试均未保留；试听产物保留在 `eval_output/position_noise/index.html`。
+
+假设是相邻 VITS chunk 对共享 acoustic overlap 使用不同随机 noise，经过 latent overlap 和 waveform SOLA 后可能形成残余相位/音色失真。POC 保持原生成器调用与新帧 noise 不变，只用缓存覆盖已经出现过的全局 overlap frame；请求开关默认关闭。
+
+Triton、G2PW CUDA、buffer-aware Mode 4、seed `314159` 和 request-local RNG 下，current/consistent 各交替运行 7 次。short、medium、long 的切块序列分别稳定为 `18/27`、`11/50/70`、`35/230/191`；两组首包 PCM bitwise equal，首块与最终 semantic SHA-256 相同，最小预测缓冲余量分别不低于约 544/186/596 ms。
+
+consistent 的全局 p99.9 sample jump 只出现不可采信的微小变化：short `6156.0 → 6155.2`、medium `8951.9 → 8947.9`、long `7619.7 → 7617.9`；接缝单点跳变基本不变。用户无法稳定分辨两组，且确认 current 与 consistent 均无失真。说明 V9 减少强制切块和 VITS/SOLA handoff 后，overlap noise 已不再是可听瓶颈；继续保留状态缓存没有质量收益。
