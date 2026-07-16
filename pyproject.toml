@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thin-tts-server"
-version = "1.0.0"
+version = "1.1.0"
 description = "GPT-SoVITS v2ProPlus streaming TTS inference server (inference-only, Chinese)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,7 @@ dependencies = [
     "uvicorn[standard]>=0.23",
     "torch>=2.1",
     "torchaudio>=2.1",
-    "transformers>=4.30",
+    "transformers>=4.30,<5",
     "librosa>=0.10",
     "soundfile>=0.12",
     "numpy>=1.24",
@@ -34,6 +34,11 @@ dependencies = [
     "split-lang>=2.0",
     "packaging>=23.0",
     "pydantic>=2.0",
+    "torchmetrics>=1.0,<2",
+    "textual>=5,<6",
+    "rich>=13.3,<14",
+    "ruamel.yaml>=0.18.17,<0.20",
+    "psutil>=5.9,<8",
 ]
 
 [project.optional-dependencies]

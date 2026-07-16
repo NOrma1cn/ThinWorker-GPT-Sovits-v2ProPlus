@@ -20,6 +20,10 @@ distributed source. Their copyrights remain with their respective owners.
 | [vector-quantize-pytorch](https://github.com/lucidrains/vector-quantize-pytorch) | MIT, Copyright (c) 2020 Phil Wang | Vector quantization implementation reference |
 | [UniLM](https://github.com/microsoft/unilm) | MIT, Copyright (c) Microsoft Corporation | Sampling utility reference |
 | [Lightning Bolts](https://github.com/Lightning-Universe/lightning-bolts) | Apache-2.0 | Distributed utility reference |
+| [Textual](https://github.com/Textualize/textual) | MIT | Terminal user interface framework |
+| [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/) | MIT | Comment-preserving YAML configuration editing |
+| [psutil](https://github.com/giampaolo/psutil) | BSD-3-Clause | Detached process discovery and lifecycle management |
+| [TorchMetrics](https://github.com/Lightning-AI/torchmetrics) | Apache-2.0 | Runtime model metric dependency |
 
 The project MIT license is in `LICENSE`. The Apache License 2.0 text applying
 to Apache-licensed portions is in `LICENSES/Apache-2.0.txt`. Upstream model

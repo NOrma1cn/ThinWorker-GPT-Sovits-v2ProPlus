@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from thin_tts import __version__
 from thin_tts.config import ServerConfig
+from thin_tts.events import startup_events
 from thin_tts.g2pw_backend import (
     configure_g2pw_backend,
     cuda_device_id_from_device,
@@ -78,6 +79,52 @@ def _backend_status(pipeline) -> dict:
     return backend.status_dict()
 
 
+def _configuration_status() -> dict:
+    if _config is None:
+        return {
+            "preset": None,
+            "device": None,
+            "half": None,
+            "fallback_policy": None,
+            "rng_isolation": None,
+            "cache_vits_encoded_text": None,
+        }
+    return {
+        "preset": _config.preset,
+        "device": _config.device,
+        "half": _config.half,
+        "fallback_policy": _config.fallback_policy,
+        "rng_isolation": _config.rng_isolation,
+        "cache_vits_encoded_text": _config.cache_vits_encoded_text,
+    }
+
+
+def enforce_fallback_policy(
+    cfg,
+    *,
+    t2s_status: dict,
+    g2pw_status: dict,
+    event_sink=startup_events.emit,
+) -> None:
+    """Make backend degradation visible and optionally fatal."""
+    reasons = []
+    if cfg.t2s_backend == "triton" and t2s_status.get("active") != "triton":
+        reason = f"T2S requested triton but active backend is {t2s_status.get('active')}"
+        if t2s_status.get("fallback_reason"):
+            reason += f": {t2s_status['fallback_reason']}"
+        reasons.append(reason)
+    if cfg.g2pw_backend == "cuda" and g2pw_status.get("active") != "cuda":
+        reason = f"G2PW requested cuda but active backend is {g2pw_status.get('active')}"
+        if g2pw_status.get("fallback_reason"):
+            reason += f": {g2pw_status['fallback_reason']}"
+        reasons.append(reason)
+    if not reasons:
+        return
+    event_sink("thin_tts_degraded", policy=cfg.fallback_policy, reasons=reasons)
+    if cfg.fallback_policy == "fail":
+        raise RuntimeError("; ".join(reasons))
+
+
 class StreamRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -89,8 +136,8 @@ class StreamRequest(BaseModel):
     hybrid_steady_tokens: Optional[int] = Field(default=None, ge=0)
     hybrid_buffer_target_ms: Optional[int] = Field(default=None, ge=0)
     profile_request_id: Optional[str] = None
-    rng_isolation: bool = True
-    cache_vits_encoded_text: bool = True
+    rng_isolation: Optional[bool] = None
+    cache_vits_encoded_text: Optional[bool] = None
 
 
 def _load_pipeline():
@@ -101,26 +148,27 @@ def _load_pipeline():
     cfg = _config
     voice_profile_cache = None
     voice_profile_metadata = None
-    if cfg.voice_profile:
-        voice_profile_metadata = _voice_profile_metadata(cfg)
-        voice_profile_cache, reason = load_voice_profile(
-            cfg.voice_profile,
-            expected_metadata=voice_profile_metadata,
-        )
-        _VOICE_PROFILE_STATUS = {
-            "configured": True,
-            "state": "loaded" if voice_profile_cache is not None else "rebuilding",
-            "reason": reason,
-            "path": str(cfg.voice_profile),
-            "voice_encoders_loaded": voice_profile_cache is None,
-        }
-        print(
-            json.dumps(
-                {"event": "thin_tts_voice_profile", **_VOICE_PROFILE_STATUS},
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+    with startup_events.stage("voice_profile"):
+        if cfg.voice_profile:
+            voice_profile_metadata = _voice_profile_metadata(cfg)
+            voice_profile_cache, reason = load_voice_profile(
+                cfg.voice_profile,
+                expected_metadata=voice_profile_metadata,
+            )
+            _VOICE_PROFILE_STATUS = {
+                "configured": True,
+                "state": "loaded" if voice_profile_cache is not None else "rebuilding",
+                "reason": reason,
+                "path": str(cfg.voice_profile),
+                "voice_encoders_loaded": voice_profile_cache is None,
+            }
+            print(
+                json.dumps(
+                    {"event": "thin_tts_voice_profile", **_VOICE_PROFILE_STATUS},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
 
     # Set env vars BEFORE pipeline import — chinese2.py reads bert_path at module load time
     if cfg.bert_path:
@@ -131,11 +179,12 @@ def _load_pipeline():
     # quiet by default while allowing an explicit false value to opt back in.
     os.environ.setdefault("THIN_TTS_DISABLE_TQDM", "1")
 
-    configure_g2pw_backend(
-        requested=cfg.g2pw_backend,
-        cuda_device_id=cuda_device_id_from_device(cfg.device),
-        cuda_memory_limit_mb=cfg.g2pw_cuda_memory_limit_mb,
-    )
+    with startup_events.stage("runtime_setup"):
+        configure_g2pw_backend(
+            requested=cfg.g2pw_backend,
+            cuda_device_id=cuda_device_id_from_device(cfg.device),
+            cuda_memory_limit_mb=cfg.g2pw_cuda_memory_limit_mb,
+        )
 
     import torch
     from thin_tts.pipeline.tts import TTS, TTS_Config
@@ -154,8 +203,10 @@ def _load_pipeline():
         }
     }
 
-    tts_config = TTS_Config(pipeline_config)
-    PIPELINE = TTS(tts_config, voice_profile_cache=voice_profile_cache)
+    pipeline_config["custom"]["t2s_backend_strict"] = cfg.fallback_policy == "fail"
+    with startup_events.stage("pipeline_load"):
+        tts_config = TTS_Config(pipeline_config)
+        PIPELINE = TTS(tts_config, voice_profile_cache=voice_profile_cache)
 
     # Warmup
     print(json.dumps({"event": "thin_tts_warmup"}), flush=True)
@@ -182,8 +233,9 @@ def _load_pipeline():
         "cache_vits_encoded_text": True,
         "fragment_interval": 0.0,
     }
-    for _ in PIPELINE.run(warmup_req):
-        pass
+    with startup_events.stage("warmup"):
+        for _ in PIPELINE.run(warmup_req):
+            pass
 
     if cfg.voice_profile and voice_profile_cache is None:
         compiled_cache = PIPELINE.export_voice_profile_cache()
@@ -207,6 +259,12 @@ def _load_pipeline():
             ),
             flush=True,
         )
+
+    enforce_fallback_policy(
+        cfg,
+        t2s_status=_backend_status(PIPELINE),
+        g2pw_status=g2pw_backend_status(),
+    )
 
     return PIPELINE
 
@@ -352,6 +410,7 @@ async def health():
         "t2s_backend": _backend_status(PIPELINE),
         "g2pw_backend": g2pw_backend_status(),
         "voice_profile": _VOICE_PROFILE_STATUS,
+        "configuration": _configuration_status(),
     }
 
 
@@ -372,8 +431,12 @@ async def stream(req: StreamRequest):
         hybrid_steady_tokens=req.hybrid_steady_tokens,
         hybrid_buffer_target_ms=req.hybrid_buffer_target_ms,
         profile_request_id=req.profile_request_id,
-        rng_isolation=req.rng_isolation,
-        cache_vits_encoded_text=req.cache_vits_encoded_text,
+        rng_isolation=cfg.rng_isolation if req.rng_isolation is None else req.rng_isolation,
+        cache_vits_encoded_text=(
+            cfg.cache_vits_encoded_text
+            if req.cache_vits_encoded_text is None
+            else req.cache_vits_encoded_text
+        ),
     )
 
     sample_rate = 32000
@@ -392,7 +455,8 @@ def run(cfg: ServerConfig):
     global _config
     _config = cfg
     print(json.dumps({"event": "thin_tts_loading"}), flush=True)
-    _load_pipeline()
+    with startup_events.stage("application_startup"):
+        _load_pipeline()
     print(json.dumps({
         "event": "thin_tts_ready",
         "host": cfg.host,
@@ -400,5 +464,6 @@ def run(cfg: ServerConfig):
         "t2s_backend": _backend_status(PIPELINE),
         "g2pw_backend": g2pw_backend_status(),
         "voice_profile": _VOICE_PROFILE_STATUS,
+        "configuration": _configuration_status(),
     }), flush=True)
     uvicorn.run(app, host=cfg.host, port=cfg.port)

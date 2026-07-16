@@ -2,6 +2,15 @@
 
 本文档记录了从 GPT-SoVITS 原始代码到 thin-tts-server 独立包过程中的所有修改，包括裁剪、Bug 修复、性能优化，以及已尝试但不可行的方向。
 
+## v1.1.0 — 2026-07-16
+
+- 新增 Textual TUI，集中提供配置编辑、启动阶段监控、请求配置与实际后端对照、日志、只读诊断和显式启停操作。
+- TUI 只作为启动器：服务通过独立会话和持久状态文件运行，关闭 TUI 不会停止服务；重新打开后可继续监控，只有显式停止才终止进程。
+- 新增 `serve | tui | doctor | status | stop` 子命令，同时保留旧 `thin-tts-server --config ...` 调用方式。
+- 新增 `max-performance | balanced | compatible` 预设和 `fail | warn | allow` 回退策略。最大性能预设强制 Triton、G2PW CUDA、FP16、RNG 隔离和 VITS 文本缓存。
+- 启动过程输出版本化 JSON 阶段事件；失败主界面只显示原因和可能解决办法，原始堆栈保留在技术日志中。诊断和 TUI 均不会安装或修复依赖。
+- `/health` 新增生效配置报告；补充 `torchmetrics`，限制 `transformers<5`，并锁定与现有依赖兼容的 Textual/Rich 范围。
+
 ## v1.0.0 — 2026-07-15
 
 - 将经过完整质量验证的 buffer-aware Mode 4 与请求级 RNG 隔离设为 `/stream` 默认合同；API 只接受模式 2/3/4，并拒绝未知字段，避免请求级参考音频等旧参数被静默忽略。

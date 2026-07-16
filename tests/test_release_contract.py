@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from thin_tts import __version__
+from thin_tts.config import ServerConfig
 from thin_tts.server import StreamRequest
 
 
@@ -12,8 +13,10 @@ def test_stream_request_defaults_to_validated_production_policy():
     request = StreamRequest(text="测试文本。")
 
     assert request.mode == 4
-    assert request.rng_isolation is True
-    assert request.cache_vits_encoded_text is True
+    assert request.rng_isolation is None
+    assert request.cache_vits_encoded_text is None
+    assert ServerConfig().rng_isolation is True
+    assert ServerConfig().cache_vits_encoded_text is True
 
 
 @pytest.mark.parametrize("mode", [0, 1, 5])
@@ -35,7 +38,7 @@ def test_package_metadata_versions_agree():
     pyproject = Path(__file__).parents[1] / "pyproject.toml"
     metadata = tomllib.loads(pyproject.read_text(encoding="utf-8"))
 
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.1.0"
     assert metadata["project"]["version"] == __version__
 
 
@@ -48,3 +51,11 @@ def test_release_licenses_and_public_api_docs_are_present():
     assert (root / "LICENSES" / "Apache-2.0.txt").is_file()
     assert "### POST /tts" not in readme
     assert "| `ref_audio_path`" not in readme
+
+
+def test_current_release_notes_are_included_in_source_distributions():
+    root = Path(__file__).parents[1]
+    manifest = (root / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert (root / f"RELEASE_NOTES_v{__version__}.md").is_file()
+    assert "include RELEASE_NOTES_v*.md" in manifest

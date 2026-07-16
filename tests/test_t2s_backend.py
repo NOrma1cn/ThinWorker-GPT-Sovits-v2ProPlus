@@ -151,9 +151,11 @@ def test_tts_config_preserves_backend_selection(tmp_path, monkeypatch):
                 "cnhuhbert_base_path": paths["hubert"],
                 "sv_path": paths["sv"],
                 "t2s_backend": "sdpa",
+                "t2s_backend_strict": True,
             }
         }
     )
 
     assert config.t2s_backend == "sdpa"
+    assert config.t2s_backend_strict is True
     assert config.update_configs()["t2s_backend"] == "sdpa"

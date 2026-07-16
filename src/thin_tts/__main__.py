@@ -1,2 +1,3 @@
 from thin_tts.cli import main
-main()
+
+raise SystemExit(main())
