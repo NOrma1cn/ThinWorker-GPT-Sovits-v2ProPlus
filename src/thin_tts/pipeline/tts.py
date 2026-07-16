@@ -109,6 +109,7 @@ class TTS_Config:
             "bert_base_path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
             "sv_path": "GPT_SoVITS/pretrained_models/sv.pth",
             "t2s_backend": "auto",
+            "t2s_backend_strict": False,
         },
     }
     configs: dict = None
@@ -154,6 +155,7 @@ class TTS_Config:
         self.cnhuhbert_base_path = self.configs.get("cnhuhbert_base_path", None)
         self.sv_path = self.configs.get("sv_path", None)
         self.t2s_backend = self.configs.get("t2s_backend", "auto")
+        self.t2s_backend_strict = bool(self.configs.get("t2s_backend_strict", False))
 
         if (self.t2s_weights_path in [None, ""]) or (not os.path.exists(self.t2s_weights_path)):
             self.t2s_weights_path = self.default_configs["v2ProPlus"]["t2s_weights_path"]
@@ -303,6 +305,7 @@ class TTS:
             requested=self.configs.t2s_backend,
             device=self.configs.device,
             is_half=self.configs.is_half,
+            strict=self.configs.t2s_backend_strict,
         )
 
     def init_cnhuhbert_weights(self, base_path: str):

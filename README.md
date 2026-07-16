@@ -2,7 +2,7 @@
 
 基于 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) v2ProPlus 的**精简流式 TTS 推理服务器**。仅保留推理代码、v2ProPlus 版本、中文支持，去掉训练代码、多版本分支、多语言 G2P、BigVGAN vocoder 等冗余模块。
 
-打包为独立 Python wheel（约 1.2 MB），安装后即可通过 HTTP API 进行流式语音合成。1.0 默认使用经过试听验证的 buffer-aware Mode 4，并为每个请求隔离 T2S/VITS 随机数流。
+打包为独立 Python wheel，安装后即可通过 HTTP API 进行流式语音合成。1.1 默认提供最大性能预设、请求级 T2S/VITS 随机数隔离、VITS 文本编码缓存，以及可配置的降级策略。
 
 ## 环境要求
 
@@ -84,7 +84,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ### 2. 安装 thin-tts-server
 
 ```bash
-pip install dist/thin_tts_server-1.0.0-py3-none-any.whl
+pip install dist/thin_tts_server-1.1.0-py3-none-any.whl
 ```
 
 或从源码安装：
@@ -92,6 +92,51 @@ pip install dist/thin_tts_server-1.0.0-py3-none-any.whl
 ```bash
 pip install .
 ```
+
+### 安装后立即打开 TUI
+
+在安装 wheel 的同一个 Python 环境中运行：
+
+```bash
+thin-tts-server tui
+```
+
+交互式终端也可以省略 `tui`：
+
+```bash
+thin-tts-server
+```
+
+如果终端暂时找不到 `thin-tts-server` 命令，或你想明确使用当前 Python 环境，可以运行等价的模块入口：
+
+```bash
+python -m thin_tts tui
+```
+
+指定已有配置文件：
+
+```bash
+python -m thin_tts tui --config config.yaml
+```
+
+虚拟环境中也可以直接调用入口文件：
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\thin-tts-server.exe tui --config .\config.yaml
+```
+
+```bash
+# Linux / WSL
+./.venv/bin/thin-tts-server tui --config ./config.yaml
+```
+
+不传 `--config` 时，TUI 使用平台默认配置位置：
+
+- Windows：`%APPDATA%\thin-tts\config.yaml`
+- Linux / WSL：`${XDG_CONFIG_HOME:-~/.config}/thin-tts/config.yaml`
+
+配置文件不存在时，TUI 会展示最大性能出厂配置；只有点击“保存配置”或“启动”后才会写入文件。正式 Triton 服务必须在 WSL/Linux 中运行，因此必须在 WSL 内安装 wheel 并启动 TUI。Windows 中打开的 TUI 只会启动和管理 Windows Python 服务，不能跨环境管理 WSL 服务。
 
 ### 3. 准备模型权重
 
@@ -115,12 +160,17 @@ pip install .
 
 ```yaml
 server:
+  preset: "max-performance"
   host: "0.0.0.0"
   port: 9881
   device: "cuda"
   half: true                # 使用 FP16 推理（推荐，节省显存）
-  t2s_backend: "auto"
-  g2pw_backend: "auto"
+  t2s_backend: "triton"
+  g2pw_backend: "cuda"
+  g2pw_cuda_memory_limit_mb: 1536
+  fallback_policy: "fail"
+  rng_isolation: true
+  cache_vits_encoded_text: true
 
 weights:
   # WSL 路径；改为你的实际位置
@@ -138,13 +188,45 @@ weights:
 
 `voice_profile` 适用于服务端固定参考音频的部署。文件不存在、模型/参考音频/参考文本发生变化或 profile 不可读时，服务会用完整链路 warmup 后原子重建；命中时直接恢复 prompt semantic、reference spectrogram、speaker embedding 和 prompt frontend cache，并跳过 CN-HuBERT 与 speaker encoder。`/health` 的 `voice_profile` 字段会报告 `disabled`、`compiled` 或 `loaded`。
 
-### 5. 启动服务
+### 5. 使用 TUI 配置并启动
 
 ```bash
-thin-tts-server --config config.yaml
+thin-tts-server tui --config config.yaml
 ```
 
-也可以用命令行参数覆盖配置：
+推荐操作顺序：
+
+1. 在“配置”页选择性能预设，填写模型、参考音频、参考文本和音色 Profile 路径。
+2. 点击“保存配置”。原文件会保留为同目录下的 `.bak` 备份。
+3. 在“诊断”页运行只读检查；它只报告问题，不会安装或修改依赖。
+4. 点击“启动”。服务会在独立后台进程中加载模型。
+5. 在“概览”页核对请求配置，并确认实际生效的 T2S、G2PW 与音色 Profile 状态；FP16、RNG 隔离和 VITS 文本缓存会显示当前服务配置。“启动过程”页显示阶段与技术日志。
+
+TUI 只是启动器。服务以独立后台进程运行，关闭 TUI 或终端不会停止服务；只有面板中的“停止”操作或以下命令会停止它：
+
+```bash
+thin-tts-server status
+thin-tts-server stop
+```
+
+重新打开 TUI 会通过 PID、进程创建时间和健康检查重新发现受管服务。状态和日志保存在：
+
+- Windows：`%LOCALAPPDATA%\thin-tts\`
+- Linux / WSL：`${XDG_STATE_HOME:-~/.local/state}/thin-tts/`
+
+诊断只报告原因和可能的解决办法，不会执行 `pip`、`apt`、驱动、CUDA 或其他依赖安装。也可以在终端运行：
+
+```bash
+thin-tts-server doctor --config config.yaml
+```
+
+无 TUI 的服务器或进程管理器应使用 `serve` 子命令：
+
+```bash
+thin-tts-server serve --config config.yaml
+```
+
+`serve` 是前台进程，按 `Ctrl+C` 会停止服务；它不受 TUI 的 `status`/`stop` 状态文件管理。旧版直接传参数的调用方式仍然兼容，也可以用命令行参数覆盖配置：
 
 ```bash
 thin-tts-server --config config.yaml --port 9882 --device cuda:1
@@ -168,7 +250,7 @@ INFO:     Uvicorn running on http://0.0.0.0:9881
 
 ```bash
 curl http://localhost:9881/health
-# {"status":"ok","server":"thin-tts-server","version":"1.0.0","loaded":true,...}
+# {"status":"ok","server":"thin-tts-server","version":"1.1.0","loaded":true,...}
 ```
 
 **流式合成：**
@@ -193,7 +275,7 @@ curl -X POST http://localhost:9881/stream \
 
 **响应示例：**
 ```json
-{"status":"ok","server":"thin-tts-server","version":"1.0.0","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...}}
+{"status":"ok","server":"thin-tts-server","version":"1.1.0","loaded":true,"streaming":true,"t2s_backend":{...},"g2pw_backend":{...},"configuration":{...}}
 ```
 
 ### POST /stream
@@ -228,7 +310,17 @@ curl -X POST http://localhost:9881/stream \
 3. **YAML 配置文件**（`port: 9882`）
 4. **默认值**
 
-支持的环境变量：`THIN_TTS_HOST`、`THIN_TTS_PORT`、`THIN_TTS_DEVICE`、`THIN_TTS_HALF`、`THIN_TTS_T2S_WEIGHTS`、`THIN_TTS_VITS_WEIGHTS`、`THIN_TTS_BERT_PATH`、`THIN_TTS_HUBERT_PATH`、`THIN_TTS_SV_PATH`。
+支持的环境变量包括 `THIN_TTS_PRESET`、`THIN_TTS_HOST`、`THIN_TTS_PORT`、`THIN_TTS_DEVICE`、`THIN_TTS_HALF`、`THIN_TTS_FALLBACK_POLICY`、`THIN_TTS_RNG_ISOLATION`、`THIN_TTS_CACHE_VITS_ENCODED_TEXT`，以及各模型路径对应的 `THIN_TTS_*` 变量。
+
+## 性能预设与降级策略
+
+- `max-performance`：请求 Triton、G2PW CUDA、FP16、RNG 隔离和 VITS 文本编码缓存；任何请求的后端未生效时启动失败。
+- `balanced`：保留 Triton 和缓存，将 G2PW 放在 CPU；发生后端降级时明确告警。
+- `compatible`：使用 SDPA 与 G2PW CPU，适合有 CUDA 但不支持 Triton 的环境。
+
+新建配置会同时预填音色 Profile 路径，首次 warmup 编译后即可在后续启动跳过音色编码器；旧配置只有明确设置 `weights.voice_profile` 才会启用。预设只提供缺省值，YAML 中的显式字段、环境变量和命令行参数仍可覆盖它。
+
+`fallback_policy` 可独立设置为 `fail`、`warn` 或 `allow`。`/health` 会分别报告请求配置和实际生效的 T2S、G2PW、音色 Profile 与缓存设置，避免静默回退。
 
 ## 从源码构建 wheel
 
