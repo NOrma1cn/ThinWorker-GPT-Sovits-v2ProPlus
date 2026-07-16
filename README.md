@@ -93,6 +93,51 @@ pip install dist/thin_tts_server-1.1.0-py3-none-any.whl
 pip install .
 ```
 
+### 安装后立即打开 TUI
+
+在安装 wheel 的同一个 Python 环境中运行：
+
+```bash
+thin-tts-server tui
+```
+
+交互式终端也可以省略 `tui`：
+
+```bash
+thin-tts-server
+```
+
+如果终端暂时找不到 `thin-tts-server` 命令，或你想明确使用当前 Python 环境，可以运行等价的模块入口：
+
+```bash
+python -m thin_tts tui
+```
+
+指定已有配置文件：
+
+```bash
+python -m thin_tts tui --config config.yaml
+```
+
+虚拟环境中也可以直接调用入口文件：
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\thin-tts-server.exe tui --config .\config.yaml
+```
+
+```bash
+# Linux / WSL
+./.venv/bin/thin-tts-server tui --config ./config.yaml
+```
+
+不传 `--config` 时，TUI 使用平台默认配置位置：
+
+- Windows：`%APPDATA%\thin-tts\config.yaml`
+- Linux / WSL：`${XDG_CONFIG_HOME:-~/.config}/thin-tts/config.yaml`
+
+配置文件不存在时，TUI 会展示最大性能出厂配置；只有点击“保存配置”或“启动”后才会写入文件。正式 Triton 服务必须在 WSL/Linux 中运行，因此必须在 WSL 内安装 wheel 并启动 TUI。Windows 中打开的 TUI 只会启动和管理 Windows Python 服务，不能跨环境管理 WSL 服务。
+
 ### 3. 准备模型权重
 
 你需要准备以下 5 组权重/模型文件：
@@ -149,7 +194,13 @@ weights:
 thin-tts-server tui --config config.yaml
 ```
 
-在交互式终端直接运行 `thin-tts-server` 也会打开 TUI。面板可以保存配置、启动/停止/重启服务，并显示启动阶段、请求配置与实际生效状态、技术日志和只读环境诊断。
+推荐操作顺序：
+
+1. 在“配置”页选择性能预设，填写模型、参考音频、参考文本和音色 Profile 路径。
+2. 点击“保存配置”。原文件会保留为同目录下的 `.bak` 备份。
+3. 在“诊断”页运行只读检查；它只报告问题，不会安装或修改依赖。
+4. 点击“启动”。服务会在独立后台进程中加载模型。
+5. 在“概览”页核对请求配置，并确认实际生效的 T2S、G2PW 与音色 Profile 状态；FP16、RNG 隔离和 VITS 文本缓存会显示当前服务配置。“启动过程”页显示阶段与技术日志。
 
 TUI 只是启动器。服务以独立后台进程运行，关闭 TUI 或终端不会停止服务；只有面板中的“停止”操作或以下命令会停止它：
 
@@ -157,6 +208,11 @@ TUI 只是启动器。服务以独立后台进程运行，关闭 TUI 或终端�
 thin-tts-server status
 thin-tts-server stop
 ```
+
+重新打开 TUI 会通过 PID、进程创建时间和健康检查重新发现受管服务。状态和日志保存在：
+
+- Windows：`%LOCALAPPDATA%\thin-tts\`
+- Linux / WSL：`${XDG_STATE_HOME:-~/.local/state}/thin-tts/`
 
 诊断只报告原因和可能的解决办法，不会执行 `pip`、`apt`、驱动、CUDA 或其他依赖安装。也可以在终端运行：
 
@@ -170,7 +226,7 @@ thin-tts-server doctor --config config.yaml
 thin-tts-server serve --config config.yaml
 ```
 
-旧版直接传参数的调用方式仍然兼容。也可以用命令行参数覆盖配置：
+`serve` 是前台进程，按 `Ctrl+C` 会停止服务；它不受 TUI 的 `status`/`stop` 状态文件管理。旧版直接传参数的调用方式仍然兼容，也可以用命令行参数覆盖配置：
 
 ```bash
 thin-tts-server --config config.yaml --port 9882 --device cuda:1

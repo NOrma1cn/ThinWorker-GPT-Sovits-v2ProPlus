@@ -51,6 +51,10 @@ def test_release_licenses_and_public_api_docs_are_present():
     assert (root / "LICENSES" / "Apache-2.0.txt").is_file()
     assert "### POST /tts" not in readme
     assert "| `ref_audio_path`" not in readme
+    assert "python -m thin_tts tui" in readme
+    assert "%APPDATA%\\thin-tts\\config.yaml" in readme
+    assert "必须在 WSL 内安装 wheel 并启动 TUI" in readme
+    assert "关闭 TUI 或终端不会停止服务" in readme
 
 
 def test_current_release_notes_are_included_in_source_distributions():
